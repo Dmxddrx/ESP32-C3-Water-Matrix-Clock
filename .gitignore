@@ -1,0 +1,70 @@
+
+# PlatformIO build outputs
+.pio/
+build/
+Debug/
+Release/
+out/
+
+# Arduino / embedded build artifacts
+*.o
+*.obj
+*.d
+*.su
+*.elf
+*.bin
+*.hex
+*.out
+*.map
+*.lst
+*.sym
+*.a
+*.uf2
+*.exe
+
+# Arduino IDE and editor files
+.arduinoIDE/
+.idea/
+*.launch
+compile_commands.json
+
+# VS Code
+# Keep project-level settings in Git if useful
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# Local credentials and secrets
+arduino_secrets.h
+secrets.h
+credentials.h
+wifi_config.h
+secrets/
+.env
+.env.*
+!.env.example
+!.env.example.*
+!**/wifi_config.example.h
+!**/credentials.example.h
+!**/arduino_secrets.example.h
+
+# Logs
+*.log
+serial_*.txt
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Temporary files and backups
+*.tmp
+*.bak
+*~
