@@ -188,24 +188,41 @@ void drawImuPage(const Status &status)
     display.println(line);
 
     display.setCursor(0, 41);
-    display.print("Mode: ");
-    display.println(
-        status.modeName != nullptr
-            ? status.modeName
-            : "-"
-    );
-
-    display.setCursor(0, 49);
     display.print("WiFi: ");
     display.println(
         status.wifiConnected ? "ON" : "OFF"
     );
 
-    display.setCursor(0, 57);
+    display.setCursor(0, 49);
     display.print("Brightness: ");
     display.println(status.brightness);
 }
+void drawModeFooter(const Status &status)
+{
+    char footer[24];
 
+    snprintf(
+        footer,
+        sizeof(footer),
+        "%s",
+        status.modeName != nullptr
+            ? status.modeName
+            : "UNKNOWN"
+    );
+
+    // Smallest built-in Adafruit GFX font.
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+
+    int16_t x = (SCREEN_WIDTH - textWidth(footer, 1)) / 2;
+    if (x < 0) {
+        x = 0;
+    }
+
+    // Bottom of the blue OLED section.
+    display.setCursor(x, 56);
+    display.print(footer);
+}
 } // namespace
 
 void begin()
@@ -260,7 +277,7 @@ void update(const Status &status)
             drawClockPage(status);
             break;
     }
-
+    drawModeFooter(status);
     // Send the completed framebuffer to the OLED.
     display.display();
 }

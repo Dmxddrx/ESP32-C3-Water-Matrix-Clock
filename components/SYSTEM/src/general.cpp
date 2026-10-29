@@ -203,7 +203,29 @@ void drawMatrixFrame(uint32_t nowMs)
     }
     ++frameCounter;
 }
+void testMatrixHardware()
+{
+    Serial.println(F("MAX7219: all-pixels test starting"));
 
+    MAX7219_SetBrightness(8);
+    MAX7219_Clear();
+
+    // Turn on all 128 pixels.
+    for (int16_t x = 0; x < 16; ++x) {
+        for (int16_t y = 0; y < 8; ++y) {
+            MAX7219_SetPixel(x, y, 1);
+        }
+    }
+
+    MAX7219_Update();
+    delay(1500);
+
+    // Clear the matrix.
+    MAX7219_Clear();
+    MAX7219_Update();
+
+    Serial.println(F("MAX7219: all-pixels test finished"));
+}
 void updateDisplay(uint32_t now)
 {
     if ((uint32_t)(now - lastDisplayRefreshMs) < ProjectConfig::DISPLAY_REFRESH_MS) return;
@@ -243,30 +265,55 @@ void general_init(void)
 
     pinMode(ProjectConfig::BUTTON_PAGE_PIN, INPUT_PULLUP);
     pinMode(ProjectConfig::BUTTON_MODE_PIN, INPUT_PULLUP);
+
     const uint32_t now = millis();
-    pageButton.rawState = pageButton.stableState = digitalRead(ProjectConfig::BUTTON_PAGE_PIN);
+
+    pageButton.rawState = pageButton.stableState =
+        digitalRead(ProjectConfig::BUTTON_PAGE_PIN);
     pageButton.rawChangedMs = now;
-    modeButton.rawState = modeButton.stableState = digitalRead(ProjectConfig::BUTTON_MODE_PIN);
+
+    modeButton.rawState = modeButton.stableState =
+        digitalRead(ProjectConfig::BUTTON_MODE_PIN);
     modeButton.rawChangedMs = now;
 
-    Wire.begin(ProjectConfig::I2C_SDA_PIN, ProjectConfig::I2C_SCL_PIN,
-               ProjectConfig::I2C_FREQUENCY_HZ);
+    Wire.begin(
+        ProjectConfig::I2C_SDA_PIN,
+        ProjectConfig::I2C_SCL_PIN,
+        ProjectConfig::I2C_FREQUENCY_HZ
+    );
     Wire.setTimeOut(50);
-    Serial.printf("I2C: SDA=GPIO%u, SCL=GPIO%u at %lu Hz\n",
-                  ProjectConfig::I2C_SDA_PIN, ProjectConfig::I2C_SCL_PIN,
-                  (unsigned long)ProjectConfig::I2C_FREQUENCY_HZ);
 
+    Serial.println(F("Initializing MAX7219..."));
     MAX7219_Init();
+
+    // Use the same brightness variable used by the animation.
+    brightness = 8;
     MAX7219_SetBrightness(brightness);
+
+    Serial.println(F("Initializing OLED..."));
     DisplayManager::begin();
+
+    Serial.println(F("Initializing MPU6050..."));
     MPU6050::begin();
+
+    Serial.println(F("Initializing Wi-Fi..."));
     WifiManager::begin();
+
+    Serial.println(F("Initializing Bluetooth..."));
     BluetoothManager::begin();
 
     lastMatrixFrameMs = millis();
-    lastDisplayRefreshMs = millis() - ProjectConfig::DISPLAY_REFRESH_MS;
-    lastBleStatusMs = millis() - ProjectConfig::BLE_STATUS_REFRESH_MS;
+    lastDisplayRefreshMs =
+        millis() - ProjectConfig::DISPLAY_REFRESH_MS;
+    lastBleStatusMs =
+        millis() - ProjectConfig::BLE_STATUS_REFRESH_MS;
+
+    // Temporary diagnostic: run after all peripherals initialize.
+    testMatrixHardware();
+
+    Serial.println(F("Drawing initial matrix frame..."));
     drawMatrixFrame(millis());
+
     Serial.println(F("Initialization complete."));
 }
 
