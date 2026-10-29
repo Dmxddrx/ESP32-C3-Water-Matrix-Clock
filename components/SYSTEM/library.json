@@ -1,0 +1,7 @@
+{
+  "name": "SYSTEM",
+  "version": "1.0.0",
+  "description": "System management library",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

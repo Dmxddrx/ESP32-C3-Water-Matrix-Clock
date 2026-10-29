@@ -6,6 +6,8 @@
 #include "display_manager.h"
 #include "wifi_manager.h"
 #include "bluetooth_manager.h"
+
+#include <Wire.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,36 +99,90 @@ void applyBluetoothCommand(const char *command)
 void drawWaterFrame(uint32_t nowMs)
 {
     MAX7219_Clear();
+
     const MPU6050::Data &imu = MPU6050::getData();
-    const float pitch = (imu.valid && MPU6050::isReady()) ? imu.pitchDeg : 0.0f;
-    const float roll = (imu.valid && MPU6050::isReady()) ? imu.rollDeg : 0.0f;
+    const bool imuValid = imu.valid && MPU6050::isReady();
+
+    float pitch = imuValid ? imu.pitchDeg : 0.0f;
+    float roll  = imuValid ? imu.rollDeg  : 0.0f;
+
+    // Limit extreme angles to keep the liquid visible in 16x8 pixels.
+    if (pitch < -30.0f) pitch = -30.0f;
+    if (pitch >  30.0f) pitch =  30.0f;
+    if (roll  < -30.0f) roll  = -30.0f;
+    if (roll  >  30.0f) roll  =  30.0f;
+
     const float seconds = nowMs * 0.001f;
+    const float radians = roll * 0.01745329252f;
 
-    for (int16_t x = 0; x < 16; ++x) {
-        float wave = 0.0f;
+    // Pitch changes the mean fill height.
+    const float baseSurface = 4.0f - pitch * 0.035f;
+
+    // Roll tilts the liquid surface across the 16-pixel width.
+    const float slope = -tanf(radians) * 0.60f;
+
+    float surfaceRows[16] = {};
+
+    // Draw water inside the tank, leaving space for its walls.
+    for (int16_t x = 1; x < 15; ++x) {
+        float ripple = 0.0f;
+
         if (matrixMode == MatrixMode::WATER) {
-            wave = 0.38f * sinf((x * 0.60f) + seconds * 2.0f);
+            ripple = 0.30f * sinf(
+                x * 0.75f + seconds * 2.2f
+            );
         }
-        // Pitch changes the average fill level; roll tilts the liquid line.
-        float surfaceY = 4.0f - (pitch * 0.065f) + ((x - 7.5f) * roll * 0.012f) + wave;
-        if (surfaceY < 0.0f) surfaceY = 0.0f;
-        if (surfaceY > 7.0f) surfaceY = 7.0f;
 
-        for (int16_t y = 0; y < 8; ++y) {
-            if ((float)y >= surfaceY) MAX7219_SetPixel(x, y, 1);
+        float surfaceY =
+            baseSurface + ((float)x - 7.5f) * slope + ripple;
+
+        if (surfaceY < 1.0f) surfaceY = 1.0f;
+        if (surfaceY > 6.0f) surfaceY = 6.0f;
+
+        surfaceRows[x] = surfaceY;
+
+        // Fill the pixels below the local water surface.
+        for (int16_t y = 1; y <= 6; ++y) {
+            if ((float)y >= surfaceY) {
+                MAX7219_SetPixel(x, y, 1);
+            }
         }
     }
 
-    // Add small hollow bubbles only in water mode. They move slowly and are
-    // intentionally sparse so the liquid silhouette remains readable.
+    // Tank side walls.
+    for (int16_t y = 1; y <= 7; ++y) {
+        MAX7219_SetPixel(0,  y, 1);
+        MAX7219_SetPixel(15, y, 1);
+    }
+
+    // Tank bottom.
+    for (int16_t x = 0; x < 16; ++x) {
+        MAX7219_SetPixel(x, 7, 1);
+    }
+
+    // Moving bubbles, only when they lie below the water surface.
     if (matrixMode == MatrixMode::WATER) {
-        const int16_t bubbleX1 = (int16_t)((frameCounter / 4U) % 13U) + 1;
-        const int16_t bubbleY1 = 6 - (int16_t)((frameCounter / 15U) % 2U);
-        const int16_t bubbleX2 = 14 - (int16_t)((frameCounter / 6U) % 11U);
-        const int16_t bubbleY2 = 5 - (int16_t)((frameCounter / 18U) % 2U);
-        MAX7219_SetPixel(bubbleX1, bubbleY1, 0);
-        MAX7219_SetPixel(bubbleX2, bubbleY2, 0);
+        const int16_t bubbleX1 =
+            (int16_t)((frameCounter / 4U) % 12U) + 2;
+
+        const int16_t bubbleY1 =
+            2 + (int16_t)((frameCounter / 15U) % 4U);
+
+        const int16_t bubbleX2 =
+            14 - (int16_t)((frameCounter / 6U) % 12U);
+
+        const int16_t bubbleY2 =
+            2 + (int16_t)((frameCounter / 18U) % 4U);
+
+        if ((float)bubbleY1 >= surfaceRows[bubbleX1]) {
+            MAX7219_SetPixel(bubbleX1, bubbleY1, 0);
+        }
+
+        if ((float)bubbleY2 >= surfaceRows[bubbleX2]) {
+            MAX7219_SetPixel(bubbleX2, bubbleY2, 0);
+        }
     }
+
     MAX7219_Update();
 }
 
