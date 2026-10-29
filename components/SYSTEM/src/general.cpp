@@ -6,7 +6,6 @@
 #include "display_manager.h"
 #include "wifi_manager.h"
 #include "bluetooth_manager.h"
-#include <Wire.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

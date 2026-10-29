@@ -1,0 +1,7 @@
+{
+  "name": "IMU",
+  "version": "1.0.0",
+  "description": "IMU sensor driver - MPU6050",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

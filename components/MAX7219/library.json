@@ -1,0 +1,7 @@
+{
+  "name": "MAX7219",
+  "version": "1.0.0",
+  "description": "MAX7219 LED matrix driver",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

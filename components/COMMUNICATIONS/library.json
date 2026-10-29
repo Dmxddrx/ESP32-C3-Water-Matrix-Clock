@@ -1,0 +1,7 @@
+{
+  "name": "Communications",
+  "version": "1.0.0",
+  "description": "Communication library for handling various communication protocols",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

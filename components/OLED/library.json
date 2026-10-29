@@ -1,0 +1,7 @@
+{
+  "name": "OLED",
+  "version": "1.0.0",
+  "description": "OLED clock display manager",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
