@@ -1,4 +1,5 @@
 #include "mpu6050.h"
+#include "display_manager.h"
 #include "project_config.h"
 #include <Wire.h>
 #include <math.h>
@@ -104,7 +105,7 @@ bool begin()
         }
     }
     if (!found) {
-        Serial.println(F("MPU6050: not detected at 0x68 or 0x69"));
+        DisplayManager::logMessage("MPU6050: not detected at 0x68 or 0x69");
         return false;
     }
 
@@ -116,17 +117,21 @@ bool begin()
         !writeRegister(REG_CONFIG, 0x03) ||
         !writeRegister(REG_GYRO_CONFIG, 0x00) ||
         !writeRegister(REG_ACCEL_CONFIG, 0x00)) {
-        Serial.println(F("MPU6050: configuration write failed"));
+        DisplayManager::logMessage("MPU6050: configuration write failed");
         return false;
     }
     delay(50);
-    Serial.println(F("MPU6050: keep device still; calibrating gyro bias..."));
+    DisplayManager::logMessage("MPU6050: keep device still; calibrating gyro bias...");
     calibrateGyro();
     latest = Data{};
     filterInitialized = false;
     lastSampleMs = millis();
     ready = true;
-    Serial.printf("MPU6050: ready at 0x%02X (WHO_AM_I=0x%02X)\n", deviceAddress, id);
+    DisplayManager::logMessage(
+    "MPU6050: ready at 0x%02X (WHO_AM_I=0x%02X)",
+    (unsigned)deviceAddress,
+    (unsigned)id
+    );
     return true;
 }
 

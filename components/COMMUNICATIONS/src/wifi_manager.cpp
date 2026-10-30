@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "display_manager.h"
 #include <WiFi.h>
 #include <time.h>
 #include <string.h>
@@ -32,13 +33,13 @@ void begin()
     WiFi.setAutoReconnect(true);
     WiFi.persistent(false);
     if (!hasCredentials()) {
-        Serial.println(F("WiFi: add local arduino_secrets.h with WIFI_SSID/WIFI_PASSWORD"));
+        DisplayManager::logMessage("WiFi: add local arduino_secrets.h with WIFI_SSID/WIFI_PASSWORD");
         return;
     }
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     startRequested = true;
     lastConnectAttemptMs = millis();
-    Serial.printf("WiFi: connecting to '%s' in background...\n", WIFI_SSID);
+    DisplayManager::logMessage("WiFi: connecting to '%s' in background...\n", WIFI_SSID);
 }
 
 void update()
@@ -48,7 +49,7 @@ void update()
         if (!ntpConfigured) {
             configTzTime(TIME_ZONE, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
             ntpConfigured = true;
-            Serial.println(F("WiFi: connected; NTP synchronization started"));
+            DisplayManager::logMessage("WiFi: connected; NTP synchronization started");
         }
         return;
     }
@@ -58,7 +59,7 @@ void update()
         WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
         startRequested = true;
         lastConnectAttemptMs = now;
-        Serial.println(F("WiFi: retrying connection"));
+        DisplayManager::logMessage("WiFi: retrying connection");
     }
 }
 

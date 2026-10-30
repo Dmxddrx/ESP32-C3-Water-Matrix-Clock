@@ -14,6 +14,17 @@ constexpr int SCREEN_HEIGHT = 64;
 constexpr int OLED_RESET = -1;
 constexpr uint8_t OLED_ADDRESS = 0x3C;
 
+constexpr uint8_t LOG_QUEUE_SIZE = 8;
+constexpr size_t LOG_LINE_SIZE = 22;
+constexpr uint32_t LOG_HOLD_MS = 1400;
+
+char logQueue[LOG_QUEUE_SIZE][LOG_LINE_SIZE] = {};
+char activeLog[LOG_LINE_SIZE] = "> STARTING";
+
+uint8_t logHead = 0;
+uint8_t logCount = 0;
+uint32_t lastLogRotateMs = 0;
+
 Adafruit_SSD1306 display(
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -107,12 +118,12 @@ void drawClockPage(const Status &status)
     // OLED rows 16-63: physical blue section.
     // Large hours and minutes.
     display.setTextSize(3);
-    display.setCursor(6, 29);
+    display.setCursor(6, 20);
     display.print(hourMinute);
 
     // Smaller seconds, aligned with the main clock.
     display.setTextSize(2);
-    display.setCursor(98, 32);
+    display.setCursor(100, 28);
     display.print(seconds);
 }
 
@@ -205,23 +216,42 @@ void drawModeFooter(const Status &status)
         footer,
         sizeof(footer),
         "%s",
-        status.modeName != nullptr
-            ? status.modeName
-            : "UNKNOWN"
+        status.modeName != nullptr ? status.modeName : "UNKNOWN"
     );
 
-    // Smallest built-in Adafruit GFX font.
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
     int16_t x = (SCREEN_WIDTH - textWidth(footer, 1)) / 2;
-    if (x < 0) {
-        x = 0;
+    if (x < 0) x = 0;
+
+    display.setCursor(x, 47);
+    display.print(footer);
+}
+
+void drawLogLine()
+{
+    const uint32_t now = millis();
+
+    if (logCount > 0 &&
+        (uint32_t)(now - lastLogRotateMs) >= LOG_HOLD_MS) {
+
+        strncpy(
+            activeLog,
+            logQueue[logHead],
+            sizeof(activeLog) - 1
+        );
+        activeLog[sizeof(activeLog) - 1] = '\0';
+
+        logHead = (logHead + 1) % LOG_QUEUE_SIZE;
+        --logCount;
+        lastLogRotateMs = now;
     }
 
-    // Bottom of the blue OLED section.
-    display.setCursor(x, 56);
-    display.print(footer);
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 56);
+    display.print(activeLog);
 }
 } // namespace
 
@@ -233,9 +263,6 @@ void begin()
     );
 
     if (!displayReady) {
-        Serial.println(
-            F("OLED: initialization failed; check I2C wiring/address")
-        );
         return;
     }
 
@@ -243,8 +270,72 @@ void begin()
     display.setTextColor(SSD1306_WHITE);
     display.setTextWrap(false);
     display.display();
+}
 
-    Serial.println(F("OLED: SSD1306 128x64 initialized"));
+void showStartupMessage(const char *message)
+{
+    if (!displayReady || message == nullptr || message[0] == '\0') {
+        return;
+    }
+
+    display.setTextWrap(false);
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+
+    const int16_t messageWidth = textWidth(message, 1);
+
+    // Scroll once from the right edge to beyond the left edge.
+    for (int16_t x = SCREEN_WIDTH;
+         x >= -messageWidth;
+         x -= 3) {
+
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setCursor(x, 28);
+        display.print(message);
+        display.display();
+
+        delay(8);
+    }
+
+    display.clearDisplay();
+    display.display();
+
+}
+
+void logMessage(const char *format, ...)
+{
+    if (format == nullptr) return;
+
+    char message[96];
+
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+
+    char shortMessage[LOG_LINE_SIZE];
+
+    // Reserve two characters for the visible log marker.
+    snprintf(shortMessage, sizeof(shortMessage), "> %.19s", message);
+
+    // If full, discard the oldest queued message.
+    if (logCount >= LOG_QUEUE_SIZE) {
+        logHead = (logHead + 1) % LOG_QUEUE_SIZE;
+        --logCount;
+    }
+
+    const uint8_t tail =
+        (logHead + logCount) % LOG_QUEUE_SIZE;
+
+    strncpy(
+        logQueue[tail],
+        shortMessage,
+        LOG_LINE_SIZE - 1
+    );
+    logQueue[tail][LOG_LINE_SIZE - 1] = '\0';
+
+    ++logCount;
 }
 
 void update(const Status &status)
@@ -278,7 +369,7 @@ void update(const Status &status)
             break;
     }
     drawModeFooter(status);
-    // Send the completed framebuffer to the OLED.
+    drawLogLine();
     display.display();
 }
 

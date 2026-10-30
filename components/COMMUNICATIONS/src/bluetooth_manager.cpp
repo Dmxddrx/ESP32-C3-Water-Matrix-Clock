@@ -1,4 +1,5 @@
 #include "bluetooth_manager.h"
+#include "display_manager.h"
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -49,12 +50,12 @@ bool begin()
     BLEDevice::setMTU(100);
     server = BLEDevice::createServer();
     if (server == nullptr) {
-        Serial.println(F("BLE: server creation failed"));
+        DisplayManager::logMessage("BLE: server creation failed");
         return false;
     }
     BLEService *service = server->createService(SERVICE_UUID);
     if (service == nullptr) {
-        Serial.println(F("BLE: service creation failed"));
+        DisplayManager::logMessage("BLE: service creation failed");
         return false;
     }
 
@@ -73,7 +74,7 @@ bool begin()
     advertising->addServiceUUID(SERVICE_UUID);
     advertising->setScanResponse(true);
     advertising->start();
-    Serial.printf("BLE: advertising as %s\n", DEVICE_NAME);
+    DisplayManager::logMessage(("BLE: advertising as %s"), DEVICE_NAME);
     return true;
 }
 

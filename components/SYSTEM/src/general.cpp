@@ -44,14 +44,14 @@ void cycleMatrixMode()
 {
     const uint8_t next = ((uint8_t)matrixMode + 1U) % 3U;
     matrixMode = (MatrixMode)next;
-    Serial.printf("Matrix mode: %s\n", modeName(matrixMode));
+    DisplayManager::logMessage("Matrix mode: %s", modeName(matrixMode));
 }
 
 void onButtonPressed(uint8_t pin)
 {
     if (pin == ProjectConfig::BUTTON_PAGE_PIN) {
         displayPage = (displayPage + 1U) % 3U;
-        Serial.printf("Display page: %u\n", displayPage);
+        DisplayManager::logMessage("Display page: %u", displayPage);
     } else if (pin == ProjectConfig::BUTTON_MODE_PIN) {
         cycleMatrixMode();
     }
@@ -90,10 +90,10 @@ void applyBluetoothCommand(const char *command)
     } else if (strcmp(command, "NEXTMODE") == 0) {
         cycleMatrixMode();
     } else {
-        Serial.printf("BLE command not recognized: %s\n", command);
+        DisplayManager::logMessage("BLE command not recognized: %s", command);
         return;
     }
-    Serial.printf("BLE command applied: %s\n", command);
+    DisplayManager::logMessage("BLE command applied: %s", command);
 }
 
 void drawWaterFrame(uint32_t nowMs)
@@ -205,7 +205,7 @@ void drawMatrixFrame(uint32_t nowMs)
 }
 void testMatrixHardware()
 {
-    Serial.println(F("MAX7219: all-pixels test starting"));
+    DisplayManager::logMessage("MAX7219: all-pixels test starting");
 
     MAX7219_SetBrightness(8);
     MAX7219_Clear();
@@ -224,7 +224,7 @@ void testMatrixHardware()
     MAX7219_Clear();
     MAX7219_Update();
 
-    Serial.println(F("MAX7219: all-pixels test finished"));
+    DisplayManager::logMessage("MAX7219: all-pixels test finished");
 }
 void updateDisplay(uint32_t now)
 {
@@ -259,9 +259,8 @@ void updateBleStatus(uint32_t now)
 
 void general_init(void)
 {
-    Serial.println();
-    Serial.println(F("ESP32-C3 Water Matrix Clock"));
-    Serial.println(F("Starting peripherals..."));
+    DisplayManager::logMessage("ESP32-C3 Water Matrix Clock");
+    DisplayManager::logMessage("Starting peripherals...");
 
     pinMode(ProjectConfig::BUTTON_PAGE_PIN, INPUT_PULLUP);
     pinMode(ProjectConfig::BUTTON_MODE_PIN, INPUT_PULLUP);
@@ -283,23 +282,23 @@ void general_init(void)
     );
     Wire.setTimeOut(50);
 
-    Serial.println(F("Initializing MAX7219..."));
+    DisplayManager::logMessage("Initializing MAX7219...");
     MAX7219_Init();
 
     // Use the same brightness variable used by the animation.
     brightness = 8;
     MAX7219_SetBrightness(brightness);
 
-    Serial.println(F("Initializing OLED..."));
+    DisplayManager::logMessage("Initializing OLED...");
     DisplayManager::begin();
 
-    Serial.println(F("Initializing MPU6050..."));
+    DisplayManager::logMessage("Initializing MPU6050...");
     MPU6050::begin();
 
-    Serial.println(F("Initializing Wi-Fi..."));
+    DisplayManager::logMessage("Initializing Wi-Fi...");
     WifiManager::begin();
 
-    Serial.println(F("Initializing Bluetooth..."));
+    DisplayManager::logMessage("Initializing Bluetooth...");
     BluetoothManager::begin();
 
     lastMatrixFrameMs = millis();
@@ -311,10 +310,10 @@ void general_init(void)
     // Temporary diagnostic: run after all peripherals initialize.
     testMatrixHardware();
 
-    Serial.println(F("Drawing initial matrix frame..."));
+    DisplayManager::logMessage("Drawing initial matrix frame...");
     drawMatrixFrame(millis());
 
-    Serial.println(F("Initialization complete."));
+    DisplayManager::logMessage("Initialization complete.");
 }
 
 void general_run(void)
