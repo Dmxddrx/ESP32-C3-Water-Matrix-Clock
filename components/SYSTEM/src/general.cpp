@@ -24,7 +24,7 @@ ButtonState pageButton;
 ButtonState modeButton;
 uint8_t displayPage = 0;
 uint8_t brightness = ProjectConfig::MATRIX_DEFAULT_BRIGHTNESS;
-MatrixMode matrixMode = MatrixMode::WATER;
+MatrixMode matrixMode = MatrixMode::HEART;
 uint32_t lastMatrixFrameMs = 0;
 uint32_t lastDisplayRefreshMs = 0;
 uint32_t lastBleStatusMs = 0;
@@ -98,7 +98,7 @@ void applyBluetoothCommand(const char *command)
 
 void drawWaterFrame(uint32_t nowMs)
 {
-    MAX7219_Clear();
+    //MAX7219_Clear();
 
     const MPU6050::Data &imu = MPU6050::getData();
     const bool imuValid = imu.valid && MPU6050::isReady();
@@ -183,49 +183,45 @@ void drawWaterFrame(uint32_t nowMs)
         }
     }
 
-    MAX7219_Update();
+    //MAX7219_Update();
 }
 
 void drawMatrixFrame(uint32_t nowMs)
 {
-    if (matrixMode == MatrixMode::HEART) {
-        MAX7219_Clear();
-        // Two hearts fill the 16x8 canvas, matching the supplied STM32 icon art.
+    // Clear the previous frame before drawing a new one.
+    MAX7219_Clear();
+
+    const bool heartMode = (matrixMode == MatrixMode::HEART);
+
+    if (heartMode) {
+
         MAX7219_DrawIcon(&Icon_Heart, 0, 0);
         MAX7219_DrawIcon(&Icon_Heart, 8, 0);
-        // A small pulse effect is achieved by briefly changing brightness.
-        const uint8_t pulse = ((frameCounter / 8U) % 2U) ? brightness : (brightness > 1 ? brightness - 1 : 1);
+
+        const uint8_t pulse =
+            ((frameCounter / 8U) % 2U)
+                ? brightness
+                : (brightness > 1 ? brightness - 1 : 1);
+
         MAX7219_SetBrightness(pulse);
-        MAX7219_Update();
-        MAX7219_SetBrightness(brightness);
+
     } else {
+
+        // WATER and LEVEL both use the tank renderer.
         drawWaterFrame(nowMs);
     }
-    ++frameCounter;
-}
-void testMatrixHardware()
-{
-    DisplayManager::logMessage("MAX7219: all-pixels test starting");
 
-    MAX7219_SetBrightness(8);
-    MAX7219_Clear();
+    // Exactly one complete framebuffer transmission per frame.
+    MAX7219_Update();
 
-    // Turn on all 128 pixels.
-    for (int16_t x = 0; x < 16; ++x) {
-        for (int16_t y = 0; y < 8; ++y) {
-            MAX7219_SetPixel(x, y, 1);
-        }
+    // Restore normal brightness after the heart pulse.
+    if (heartMode) {
+        MAX7219_SetBrightness(brightness);
     }
 
-    MAX7219_Update();
-    delay(1500);
-
-    // Clear the matrix.
-    MAX7219_Clear();
-    MAX7219_Update();
-
-    DisplayManager::logMessage("MAX7219: all-pixels test finished");
+    ++frameCounter;
 }
+
 void updateDisplay(uint32_t now)
 {
     if ((uint32_t)(now - lastDisplayRefreshMs) < ProjectConfig::DISPLAY_REFRESH_MS) return;
@@ -254,6 +250,31 @@ void updateBleStatus(uint32_t now)
                                 imu.valid ? imu.rollDeg : 0.0f,
                                 WifiManager::isConnected(), WifiManager::isTimeValid(),
                                 modeName(matrixMode), brightness);
+}
+
+void testMatrixRefresh()
+{
+    // Stage 1: Completely OFF.
+    MAX7219_Clear();
+    MAX7219_Update();
+    delay(1000);
+
+    // Stage 2: Checkerboard.
+    for (int16_t x = 0; x < 16; ++x) {
+        for (int16_t y = 0; y < 8; ++y) {
+            if (((x + y) & 1) == 0) {
+                MAX7219_SetPixel(x, y, 1);
+            }
+        }
+    }
+
+    MAX7219_Update();
+    delay(1500);
+
+    // Stage 3: Completely OFF again.
+    MAX7219_Clear();
+    MAX7219_Update();
+    delay(1000);
 }
 }
 
@@ -307,10 +328,9 @@ void general_init(void)
     lastBleStatusMs =
         millis() - ProjectConfig::BLE_STATUS_REFRESH_MS;
 
-    // Temporary diagnostic: run after all peripherals initialize.
-    testMatrixHardware();
-
     DisplayManager::logMessage("Drawing initial matrix frame...");
+    testMatrixRefresh();
+
     drawMatrixFrame(millis());
 
     DisplayManager::logMessage("Initialization complete.");
