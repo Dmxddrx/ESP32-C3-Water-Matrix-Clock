@@ -17,8 +17,8 @@ constexpr uint8_t MATRIX_CS_PIN = 4;
 constexpr uint8_t MATRIX_MODULES = 2;
 constexpr uint8_t MATRIX_DEFAULT_BRIGHTNESS = 2;
 
-constexpr uint8_t BUTTON_PAGE_PIN = 20;
-constexpr uint8_t BUTTON_MODE_PIN = 21;
+constexpr uint8_t BUTTON_PAGE_PIN = 21;
+constexpr uint8_t BUTTON_MODE_PIN = 20;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
 
 // This build assumes a 128x64 SSD1306 I2C OLED at 0x3C.

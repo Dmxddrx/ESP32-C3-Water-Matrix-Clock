@@ -7,6 +7,7 @@
 #include "wifi_manager.h"
 #include "bluetooth_manager.h"
 #include "analog_manager.h"
+#include "sand_clock.h"
 
 #include <Wire.h>
 #include <math.h>
@@ -52,6 +53,12 @@ void cycleMatrixMode()
 {
     const uint8_t next = ((uint8_t)matrixMode + 1U) % 3U;
     matrixMode = (MatrixMode)next;
+
+    // Reset sand animation when entering LEVEL mode.
+    if (matrixMode == MatrixMode::LEVEL) {
+        SandClock::reset(millis());
+    }
+
     DisplayManager::logMessage("Matrix mode: %s", modeName(matrixMode));
 }
 
@@ -85,7 +92,12 @@ void applyBluetoothCommand(const char *command)
 
     if (strcmp(command, "MODE=WATER") == 0) matrixMode = MatrixMode::WATER;
     else if (strcmp(command, "MODE=HEART") == 0) matrixMode = MatrixMode::HEART;
-    else if (strcmp(command, "MODE=LEVEL") == 0) matrixMode = MatrixMode::LEVEL;
+
+    else if (strcmp(command, "MODE=LEVEL") == 0) {
+    matrixMode = MatrixMode::LEVEL;
+    SandClock::reset(millis());
+    }
+
     else if (strncmp(command, "PAGE=", 5) == 0) {
         const int value = atoi(command + 5);
         if (value >= 0 && value <= 2) displayPage = (uint8_t)value;
@@ -196,12 +208,9 @@ void drawWaterFrame(uint32_t nowMs)
 
 void drawMatrixFrame(uint32_t nowMs)
 {
-    // Clear the previous frame before drawing a new one.
-    MAX7219_Clear();
-
-    const bool heartMode = (matrixMode == MatrixMode::HEART);
-
-    if (heartMode) {
+    if (matrixMode == MatrixMode::HEART)
+    {
+        MAX7219_Clear();
 
         MAX7219_DrawIcon(&Icon_Heart, 0, 0);
         MAX7219_DrawIcon(&Icon_Heart, 8, 0);
@@ -212,23 +221,25 @@ void drawMatrixFrame(uint32_t nowMs)
                 : (brightness > 1 ? brightness - 1 : 1);
 
         MAX7219_SetBrightness(pulse);
+        MAX7219_Update();
 
-    } else {
-
-        // WATER and LEVEL both use the tank renderer.
-        drawWaterFrame(nowMs);
-    }
-
-    // Exactly one complete framebuffer transmission per frame.
-    MAX7219_Update();
-
-    // Restore normal brightness after the heart pulse.
-    if (heartMode) {
         MAX7219_SetBrightness(brightness);
+    }
+    else if (matrixMode == MatrixMode::WATER)
+    {
+        MAX7219_Clear();
+        drawWaterFrame(nowMs);
+        MAX7219_Update();
+    }
+    else if (matrixMode == MatrixMode::LEVEL)
+    {
+        // SandClock manages its own framebuffer and MAX7219 updates.
+        SandClock::update(nowMs);
     }
 
     ++frameCounter;
 }
+
 
 void updateDisplay(uint32_t now)
 {
@@ -265,30 +276,50 @@ void updateBleStatus(uint32_t now)
                                 modeName(matrixMode), brightness);
 }
 
-void testMatrixRefresh()
+void testSandFlowPattern()
 {
-    // Stage 1: Completely OFF.
+    constexpr uint16_t STEP_DELAY_MS = 180;
+
     MAX7219_Clear();
     MAX7219_Update();
-    delay(1000);
+    delay(500);
 
-    // Stage 2: Checkerboard.
-    for (int16_t x = 0; x < 16; ++x) {
-        for (int16_t y = 0; y < 8; ++y) {
-            if (((x + y) & 1) == 0) {
-                MAX7219_SetPixel(x, y, 1);
-            }
-        }
+    // ------------------------------------------
+    // TOP SLAVE
+    // Physical LEFT -> RIGHT
+    // Logical (0,0) -> (7,7)
+    // ------------------------------------------
+
+    for (int8_t i = 0; i < 8; ++i)
+    {
+        MAX7219_Clear();
+
+        MAX7219_SetPixel(i, i, 1);
+
+        MAX7219_Update();
+        delay(STEP_DELAY_MS);
     }
 
-    MAX7219_Update();
-    delay(1500);
+    // ------------------------------------------
+    // BOTTOM MASTER
+    // Physical LEFT -> RIGHT
+    // Logical (8,7) -> (15,0)
+    // ------------------------------------------
 
-    // Stage 3: Completely OFF again.
+    for (int8_t i = 0; i < 8; ++i)
+    {
+        MAX7219_Clear();
+
+        MAX7219_SetPixel(8 + i, 7 - i, 1);
+
+        MAX7219_Update();
+        delay(STEP_DELAY_MS);
+    }
+
     MAX7219_Clear();
     MAX7219_Update();
-    delay(1000);
 }
+
 void updatePowerMonitor(uint32_t now)
 {
     // GPIO0 is checked continuously.
@@ -360,6 +391,7 @@ void general_init(void)
 
     DisplayManager::logMessage("Initializing MAX7219...");
     MAX7219_Init();
+    SandClock::begin();
 
     // Use the same brightness variable used by the animation.
     brightness = 8;
@@ -383,9 +415,10 @@ void general_init(void)
     lastBleStatusMs =
         millis() - ProjectConfig::BLE_STATUS_REFRESH_MS;
 
-    DisplayManager::logMessage("Drawing initial matrix frame...");
-    testMatrixRefresh();
+    DisplayManager::logMessage("Testing sand flow direction...");
+    testSandFlowPattern();
 
+    DisplayManager::logMessage("Drawing initial matrix frame...");
     drawMatrixFrame(millis());
 
     DisplayManager::logMessage("Initialization complete.");
