@@ -1,4 +1,6 @@
 #include "display_manager.h"
+#include "fonts.h"
+#include "icons.h"
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -71,13 +73,16 @@ void drawDateHeader(const Status &status)
     char dateText[24];
 
     if (status.timeValid) {
+
         strftime(
             dateText,
             sizeof(dateText),
             "%a %d %b %Y",
             &status.localTime
         );
+
     } else {
+
         snprintf(
             dateText,
             sizeof(dateText),
@@ -85,9 +90,103 @@ void drawDateHeader(const Status &status)
         );
     }
 
-    // OLED rows 0-15: physical yellow section.
+    display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    drawCenteredText(dateText, 4, 1);
+
+    // Date aligned to the left.
+    display.setCursor(0, 4);
+    display.print(dateText);
+
+    // Charging / external power indication.
+    if (status.externalPowerPresent)
+    {
+        // Your custom 8x12 lightning icon.
+        display.drawBitmap(
+            SCREEN_WIDTH - Icon_Power.width - 2,
+            2,
+            Icon_Power.data,
+            Icon_Power.width,
+            Icon_Power.height,
+            SSD1306_WHITE
+        );
+    }
+    else if (status.batteryPercent >= 0)
+    {
+        // Show battery percentage when not charging.
+        char batteryText[6];
+
+        snprintf(
+            batteryText,
+            sizeof(batteryText),
+            "%d%%",
+            status.batteryPercent
+        );
+
+        const int16_t width = textWidth(batteryText, 1);
+
+        display.setCursor(
+            SCREEN_WIDTH - width,
+            4
+        );
+
+        display.print(batteryText);
+    }
+}
+
+void drawBitmapChar(
+    char ch,
+    int16_t x,
+    int16_t y,
+    const FontDef_t *font
+)
+{
+    if (font == nullptr || font->data == nullptr) return;
+    if (ch < 32 || ch > 126) return;
+
+    const uint16_t offset =
+        (uint16_t)(ch - 32) * font->FontHeight;
+
+    for (uint8_t row = 0; row < font->FontHeight; ++row) {
+
+        const uint16_t rowBits = font->data[offset + row];
+
+        for (uint8_t col = 0; col < font->FontWidth && col < 16; ++col) {
+
+            if (rowBits & (uint16_t)(0x8000U >> col)) {
+
+                const int16_t px = x + col;
+                const int16_t py = y + row;
+
+                if (px >= 0 && px < SCREEN_WIDTH &&
+                    py >= 0 && py < SCREEN_HEIGHT) {
+
+                    display.drawPixel(
+                        px,
+                        py,
+                        SSD1306_WHITE
+                    );
+                }
+            }
+        }
+    }
+}
+
+void drawBitmapString(
+    const char *text,
+    int16_t x,
+    int16_t y,
+    const FontDef_t *font
+)
+{
+    if (text == nullptr || font == nullptr) return;
+
+    while (*text) {
+
+        drawBitmapChar(*text, x, y, font);
+
+        x += font->FontWidth;
+        ++text;
+    }
 }
 
 void drawClockPage(const Status &status)
@@ -115,16 +214,21 @@ void drawClockPage(const Status &status)
         snprintf(seconds, sizeof(seconds), "--");
     }
 
-    // OLED rows 16-63: physical blue section.
-    // Large hours and minutes.
-    display.setTextSize(3);
-    display.setCursor(6, 20);
-    display.print(hourMinute);
+    // Main clock: custom 16x26 font.
+    drawBitmapString(
+        hourMinute,
+        17,
+        18,
+        &Font_16x26
+    );
 
-    // Smaller seconds, aligned with the main clock.
-    display.setTextSize(2);
-    display.setCursor(100, 28);
-    display.print(seconds);
+    // Seconds: small 7x10 font.
+    drawBitmapString(
+        seconds,
+        101,
+        30,
+        &Font_7x10
+    );
 }
 
 void drawNetworkPage(const Status &status)

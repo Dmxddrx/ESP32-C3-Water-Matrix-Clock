@@ -6,6 +6,7 @@
 #include "display_manager.h"
 #include "wifi_manager.h"
 #include "bluetooth_manager.h"
+#include "analog_manager.h"
 
 #include <Wire.h>
 #include <math.h>
@@ -29,6 +30,13 @@ uint32_t lastMatrixFrameMs = 0;
 uint32_t lastDisplayRefreshMs = 0;
 uint32_t lastBleStatusMs = 0;
 uint32_t frameCounter = 0;
+
+// Power and battery state
+bool externalPowerPresent = false;
+float batteryVoltage = 0.0f;
+int batteryPercent = -1;
+bool batteryDataValid = false;
+uint32_t lastBatteryUpdateMs = 0;
 
 const char *modeName(MatrixMode mode)
 {
@@ -235,9 +243,14 @@ void updateDisplay(uint32_t now)
     status.wifiConnected = WifiManager::isConnected();
     status.ntpSynced = WifiManager::isTimeValid();
     status.ipAddress = WifiManager::ipAddress();
+
     status.modeName = modeName(matrixMode);
     status.page = displayPage;
     status.brightness = brightness;
+
+    status.externalPowerPresent = externalPowerPresent;
+    status.batteryPercent = batteryPercent;
+
     DisplayManager::update(status);
 }
 
@@ -276,10 +289,52 @@ void testMatrixRefresh()
     MAX7219_Update();
     delay(1000);
 }
+void updatePowerMonitor(uint32_t now)
+{
+    // GPIO0 is checked continuously.
+    externalPowerPresent =
+        AnalogManager::isExternalPowerPresent();
+
+    // External power detected.
+    if (externalPowerPresent)
+    {
+        // Do not read GPIO1 while external power is present.
+        batteryVoltage = 0.0f;
+        batteryPercent = -1;
+
+        batteryDataValid = false;
+
+        return;
+    }
+
+    // No external power: read battery once per second.
+    if (!batteryDataValid ||
+        (uint32_t)(now - lastBatteryUpdateMs) >= 1000)
+    {
+        lastBatteryUpdateMs = now;
+
+        // GPIO1 is read only in this branch.
+        batteryVoltage =
+            AnalogManager::readBatteryVoltage();
+
+        batteryPercent =
+            AnalogManager::voltageToPercentage(batteryVoltage);
+
+        batteryDataValid = true;
+
+        DisplayManager::logMessage(
+            "Battery: %.2fV %d%%",
+            batteryVoltage,
+            batteryPercent
+        );
+    }
+}
 }
 
 void general_init(void)
 {
+    AnalogManager::begin();
+
     DisplayManager::logMessage("ESP32-C3 Water Matrix Clock");
     DisplayManager::logMessage("Starting peripherals...");
 
@@ -355,6 +410,8 @@ void general_run(void)
         lastMatrixFrameMs = now;
         drawMatrixFrame(now);
     }
+
+    updatePowerMonitor(now);
 
     updateDisplay(now);
     updateBleStatus(now);

@@ -22,5 +22,12 @@ static const uint8_t data_Smiley[8] = {
     0x00
 };
 
+const uint8_t icon_power_8x12[12] = {
+    0x02, 0x06, 0x0c, 0x1c,
+    0x38, 0x7f, 0xfe, 0x1c,
+    0x38, 0x30, 0x60, 0x40
+};
+
 const IconDef_t Icon_Heart  = {8, 8, data_Heart};
 const IconDef_t Icon_Smiley = {8, 8, data_Smiley};
+const IconDef_t Icon_Power = {8, 12, icon_power_8x12};

@@ -22,6 +22,9 @@ struct Status {
 
     uint8_t page = 0;
     uint8_t brightness = 5;
+
+    bool externalPowerPresent = false;
+    int batteryPercent = -1;    
 };
 
 void begin();

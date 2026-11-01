@@ -14,6 +14,7 @@ extern "C" {
 #endif
 extern const IconDef_t Icon_Heart;
 extern const IconDef_t Icon_Smiley;
+extern const IconDef_t Icon_Power;
 #ifdef __cplusplus
 }
 #endif
