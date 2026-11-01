@@ -1,6 +1,6 @@
-
 #include "sand_clock.h"
 #include "max7219.h"
+#include "display_manager.h"
 
 #include <esp_system.h>   // ESP32-C3 hardware random number generator
 #include <string.h>
@@ -10,63 +10,15 @@ namespace {
 
 constexpr uint8_t MATRIX_SIZE = 8;
 constexpr uint8_t GRAIN_TOTAL = 64;
-constexpr uint8_t LAYER_TOTAL = 15;
+
 
 // Animation timing. update() must be called frequently from general_run().
 constexpr uint32_t DROP_STEP_MS = 75;       // Time between moving-grain pixels
 constexpr uint32_t GRAIN_GAP_MS = 120;      // Pause after one grain settles
 constexpr uint32_t COMPLETE_HOLD_MS = 1800; // Pause before a new randomized cycle
 
-/*
- * TOP SLAVE source layers, using the LED numbering supplied by the user.
- * Each row is one layer. LEDs are 1..64, row-major within the top module.
- *
- * First layers follow the requested pattern:
- *   Layer 0: 1
- *   Layer 1: 7, 16
- *   Layer 2: 6, 15, 24
- *
- * The remaining layers continue the same diagonal sweep. LED 8 is placed
- * in the eight-grain centre layer because LED 1 was already used in layer 0.
- * This makes every top LED 1..64 appear exactly once, with matching layer
- * sizes for the lower chamber.
- */
-static const uint8_t SOURCE_LAYERS[LAYER_TOTAL][MATRIX_SIZE] = {
-    { 1,  0,  0,  0,  0,  0,  0,  0 },
-    { 7, 16,  0,  0,  0,  0,  0,  0 },
-    { 6, 15, 24,  0,  0,  0,  0,  0 },
-    { 5, 14, 23, 32,  0,  0,  0,  0 },
-    { 4, 13, 22, 31, 40,  0,  0,  0 },
-    { 3, 12, 21, 30, 39, 48,  0,  0 },
-    { 2, 11, 20, 29, 38, 47, 56,  0 },
-    { 8, 10, 19, 28, 37, 46, 55, 64 },
-    { 9, 18, 27, 36, 45, 54, 63,  0 },
-    {17, 26, 35, 44, 53, 62,  0,  0 },
-    {25, 34, 43, 52, 61,  0,  0,  0 },
-    {33, 42, 51, 60,  0,  0,  0,  0 },
-    {41, 50, 59,  0,  0,  0,  0,  0 },
-    {49, 58,  0,  0,  0,  0,  0,  0 },
-    {57,  0,  0,  0,  0,  0,  0,  0 }
-};
-
-static const uint8_t LAYER_COUNTS[LAYER_TOTAL] = {
-    1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1
-};
-
-// Source physics selection zone.
-// Layer indices are zero-based:
-// Layer index 2 = physical 3rd diagonal row.
-// Layer index 10 = physical 11th diagonal row.
-constexpr uint8_t SOURCE_PHYSICS_FIRST_LAYER = 2;
-constexpr uint8_t SOURCE_PHYSICS_LAST_LAYER = 10;
-
-constexpr uint8_t SOURCE_PHYSICS_LAYER_COUNT =
-    SOURCE_PHYSICS_LAST_LAYER -
-    SOURCE_PHYSICS_FIRST_LAYER + 1;
-
-// A grain's source and destination are paired by their index in these arrays.
-// Each layer is weighted-shuffled independently so grains never cross layer
-// boundaries. Centre positions are more likely to be selected earlier.
+// Source and destination selection orders generated independently
+// from their respective 8x8 priority maps.
 uint8_t sourceOrder[GRAIN_TOTAL];       // Top LED numbers: 1..64
 uint8_t destinationOrder[GRAIN_TOTAL];  // Bottom LED numbers: 65..128
 
@@ -90,111 +42,56 @@ uint32_t lastDropStepMs = 0;
 uint32_t lastGrainFinishMs = 0;
 uint32_t completedMs = 0;
 
-// ------------------------------------------------------------
-// RANDOMIZATION
-// ------------------------------------------------------------
+/*
+ * TOP SLAVE SOURCE PRIORITY MAP
+ *
+ * Each cell represents the selection priority of one LED.
+ *
+ * Lower priority numbers are selected earlier.
+ * Equal priority numbers are randomly shuffled.
+ *
+ * This creates the centre-outward, progressive sand-emptying
+ * behaviour specified in the hourglass probability diagram.
+ */
+static const uint8_t SOURCE_PRIORITY[MATRIX_SIZE][MATRIX_SIZE] = {
+    {  1,  2,  4,  6,  8, 10, 14, 19 },
+    {  2,  3,  5,  7,  9, 13, 17, 22 },
+    {  4,  5,  6,  8, 11, 15, 20, 25 },
+    {  6,  7,  8,  9, 12, 18, 24, 27 },
+    {  8,  9, 11, 12, 16, 21, 26, 29 },
+    { 10, 13, 15, 18, 21, 23, 28, 31 },
+    { 14, 17, 20, 24, 26, 28, 30, 32 },
+    { 19, 22, 25, 27, 29, 31, 32, 33 }
+};
+
+constexpr uint8_t SOURCE_MAX_PRIORITY = 33;
 
 /*
- * Return a relative probability weight for a position in a layer.
+ * BOTTOM MASTER DESTINATION PRIORITY MAP
  *
- * The middle positions have the highest selection probability.
- * The outer positions have the lowest probability.
+ * Priority 1 starts at the outer bottom tip.
+ * The priority increases towards the neck.
  *
- * Example weights:
+ * Equal priority numbers are randomly shuffled.
  *
- *   Count 1:  [1]
- *   Count 2:  [1, 1]
- *   Count 3:  [1, 4, 1]
- *   Count 4:  [1, 4, 4, 1]
- *   Count 5:  [1, 4, 7, 4, 1]
- *   Count 6:  [1, 4, 7, 7, 4, 1]
- *   Count 7:  [1, 4, 7, 10, 7, 4, 1]
- *   Count 8:  [1, 4, 7, 10, 10, 7, 4, 1]
- *
- * The weights apply to both source LEDs and destination LEDs.
- * They do not remove any candidates. Every LED is eventually selected.
+ * This controls the order in which the lower chamber receives
+ * and accumulates the sand particles.
  */
-uint8_t centerProbabilityWeight(uint8_t position, uint8_t count)
-{
-    if (count <= 2) {
-        return 1;
-    }
+static const uint8_t DESTINATION_PRIORITY[MATRIX_SIZE][MATRIX_SIZE] = {
+    { 35, 34, 33, 32, 30, 28, 26, 24 },
+    { 34, 31, 29, 28, 27, 25, 23, 22 },
+    { 33, 29, 21, 20, 19, 18, 17, 16 },
+    { 32, 28, 20, 15, 14, 13, 12, 11 },
+    { 30, 27, 19, 14, 10,  9,  8,  7 },
+    { 28, 25, 18, 13,  9,  6,  5,  4 },
+    { 26, 23, 17, 12,  8,  5,  3,  2 },
+    { 24, 22, 16, 11,  7,  4,  2,  1 }
+};
 
-    // Distance from the nearest edge of the candidate list.
-    const uint8_t distanceFromEdge =
-        (position < (count - 1U - position))
-            ? position
-            : (count - 1U - position);
+constexpr uint8_t DESTINATION_MAX_PRIORITY = 35;
 
-    // Centre positions receive greater selection weights.
-    return (uint8_t)(1U + (3U * distanceFromEdge));
-}
 
-/*
- * Weighted Fisher-Yates shuffle without replacement.
- *
- * Unlike a normal Fisher-Yates shuffle, each candidate has a different
- * probability of being selected for the next position.
- *
- * The selected value and its weight are swapped together, preserving the
- * original position weight of every candidate.
- *
- * This produces a weighted random order while guaranteeing that every
- * candidate appears exactly once.
- */
-void weightedShuffle(uint8_t *values, uint8_t count)
-{
-    if (values == nullptr || count < 2) {
-        return;
-    }
 
-    uint8_t weights[MATRIX_SIZE] = {};
-
-    // Assign a probability weight to every original layer position.
-    for (uint8_t i = 0; i < count; ++i) {
-        weights[i] = centerProbabilityWeight(i, count);
-    }
-
-    // Weighted random permutation using the ESP32-C3 hardware RNG.
-    for (uint8_t i = 0; i < count; ++i) {
-
-        uint16_t totalWeight = 0;
-
-        // Calculate the total weight of the remaining candidates.
-        for (uint8_t j = i; j < count; ++j) {
-            totalWeight += weights[j];
-        }
-
-        if (totalWeight == 0) {
-            return;
-        }
-
-        // Select one remaining candidate using its relative weight.
-        uint16_t randomValue =
-            (uint16_t)(esp_random() % totalWeight);
-
-        uint8_t selected = i;
-
-        for (uint8_t j = i; j < count; ++j) {
-
-            if (randomValue < weights[j]) {
-                selected = j;
-                break;
-            }
-
-            randomValue -= weights[j];
-        }
-
-        // Move the selected LED and its probability weight together.
-        const uint8_t tempValue = values[i];
-        values[i] = values[selected];
-        values[selected] = tempValue;
-
-        const uint8_t tempWeight = weights[i];
-        weights[i] = weights[selected];
-        weights[selected] = tempWeight;
-    }
-}
 
 /*
  * Rotate an 8x8 LED position 90 degrees anticlockwise.
@@ -222,538 +119,194 @@ uint8_t rotateLedCCW(uint8_t led)
 }
 
 
-/*
- * Rotate the SLAVE module 90 degrees anticlockwise.
- *
- * Apply the additional LED 1 / LED 57 corner correction
- * only to the SLAVE module.
- */
 uint8_t rotateSlaveLedCCW(uint8_t led)
 {
-    uint8_t rotatedLed = rotateLedCCW(led);
+    const uint8_t index = led - 1;
 
-    // Swap only the two corner positions on the SLAVE.
-    if (rotatedLed == 1) {
-        rotatedLed = 57;
-    }
-    else if (rotatedLed == 57) {
-        rotatedLed = 1;
-    }
+    const uint8_t x = index % MATRIX_SIZE;
+    const uint8_t y = index / MATRIX_SIZE;
 
-    return rotatedLed;
+    const uint8_t newX = x;
+    const uint8_t newY = y;
+
+    return (uint8_t)(newY * MATRIX_SIZE + newX + 1);
 }
 
 /*
- * SOURCE PHYSICS SELECTION
+ * Uniformly shuffle LEDs having the same priority.
  *
- * The middle particles of a diagonal layer are selected before its
- * outer particles become eligible.
+ * The priority map determines which group is selected first.
+ * This function only randomizes the order inside that group.
  *
- * However, the next layer's middle particles can compete with the
- * previous layer's outer particles.
- *
- * This prevents the source chamber from emptying one complete row
- * at a time and produces a more natural centre-first sand movement.
+ * Every LED is preserved exactly once.
  */
-
-struct SourceCandidate {
-    uint8_t layer;
-    uint8_t position;
-    uint8_t weight;
-};
-
-
-/*
- * Calculate how far a particle is from the nearest edge of its layer.
- *
- * Examples:
- *
- *   Count 3:  [0, 1, 0]
- *   Count 4:  [0, 1, 1, 0]
- *   Count 5:  [0, 1, 2, 1, 0]
- *   Count 6:  [0, 1, 2, 2, 1, 0]
- *
- * Higher distance means closer to the centre.
- */
-uint8_t sourcePositionDistance(uint8_t position, uint8_t count)
+void shufflePriorityGroup(uint8_t *leds, uint8_t count)
 {
-    const uint8_t rightDistance =
-        count - 1U - position;
+    if (leds == nullptr || count < 2) {
+        return;
+    }
 
-    return (position < rightDistance)
-        ? position
-        : rightDistance;
+    // Fisher-Yates shuffle using the ESP32-C3 hardware RNG.
+    for (int16_t i = (int16_t)count - 1; i > 0; --i)
+    {
+        const uint8_t j =
+            (uint8_t)(esp_random() % (uint32_t)(i + 1));
+
+        const uint8_t temp = leds[i];
+        leds[i] = leds[j];
+        leds[j] = temp;
+    }
 }
 
-
 /*
- * Determine whether all particles in the current centre-outward
- * shell of a source layer have already been selected.
+ * BUILD PRIORITY ORDER
  *
- * A layer can only expose its next outer shell when its current
- * shell has been completely selected.
+ * Read an 8x8 priority matrix and generate the corresponding LED order.
+ *
+ * Process:
+ *
+ * 1. Start from priority 1.
+ * 2. Find all LEDs with that priority.
+ * 3. Convert their coordinates into LED numbers.
+ * 4. Apply the appropriate module rotation.
+ * 5. Randomize LEDs sharing the same priority.
+ * 6. Append them to the final LED order.
+ * 7. Continue with the next priority.
+ *
+ * sourceModule = true:
+ *     Use top slave LED numbering and slave rotation correction.
+ *
+ * sourceModule = false:
+ *     Use bottom master LED numbering and normal master rotation.
+ *
+ * This ensures that the generated order follows the supplied
+ * probability diagram exactly.
  */
-bool isSourceShellComplete(
-    uint8_t layer,
-    int8_t shellDistance,
-    const uint8_t layerCounts[SOURCE_PHYSICS_LAYER_COUNT],
-    const bool selected[SOURCE_PHYSICS_LAYER_COUNT][MATRIX_SIZE]
+bool buildPriorityOrder(
+    const uint8_t priorityMap[MATRIX_SIZE][MATRIX_SIZE],
+    uint8_t maximumPriority,
+    bool sourceModule,
+    uint8_t *outputOrder
 )
 {
-    const uint8_t count = layerCounts[layer];
+    if (priorityMap == nullptr || outputOrder == nullptr) {
+        return false;
+    }
 
-    for (uint8_t position = 0; position < count; ++position)
+    uint8_t outputOffset = 0;
+
+    // Progress through the priority levels in ascending order.
+    for (uint8_t priority = 1;
+         priority <= maximumPriority;
+         ++priority)
     {
-        if (sourcePositionDistance(position, count) ==
-            (uint8_t)shellDistance)
+        uint8_t priorityGroup[GRAIN_TOTAL] = {};
+        uint8_t groupCount = 0;
+
+        // Find all LEDs having the current priority.
+        for (uint8_t row = 0; row < MATRIX_SIZE; ++row)
         {
-            if (!selected[layer][position]) {
-                return false;
+            for (uint8_t col = 0; col < MATRIX_SIZE; ++col)
+            {
+                if (priorityMap[row][col] != priority) {
+                    continue;
+                }
+
+                // Convert matrix coordinates into local LED number.
+                const uint8_t localLed =
+                    (uint8_t)(row * MATRIX_SIZE + col + 1);
+
+                uint8_t finalLed;
+
+                if (sourceModule)
+                {
+                    // Top slave: anticlockwise rotation with
+                    // the existing LED 1 / LED 57 correction.
+                    finalLed = rotateSlaveLedCCW(localLed);
+                }
+                else
+                {
+                    // Bottom master: normal anticlockwise rotation.
+                    // No slave corner correction is applied.
+                    finalLed =
+                        (uint8_t)(64 + rotateLedCCW(localLed));
+                }
+
+                // Protect the priority group from exceeding its array capacity.
+                if (groupCount >= GRAIN_TOTAL) {
+                    return false;
+                }
+
+                priorityGroup[groupCount++] = finalLed;
             }
         }
+
+        // Every priority from 1 to maximumPriority must exist.
+        if (groupCount == 0) {
+            return false;
+        }
+
+        // Randomize only LEDs that share the same priority.
+        shufflePriorityGroup(priorityGroup, groupCount);
+
+        // Append the completed priority group to the final order.
+        for (uint8_t i = 0; i < groupCount; ++i)
+        {
+            if (outputOffset >= GRAIN_TOTAL) {
+                return false;
+            }
+
+            outputOrder[outputOffset++] = priorityGroup[i];
+        }
+    }
+
+    // Both modules must produce exactly 64 LED positions.
+    return outputOffset == GRAIN_TOTAL;
+}
+
+/*
+ * BUILD COMPLETE TRANSFER PLAN
+ *
+ * SOURCE:
+ *     Uses SOURCE_PRIORITY.
+ *     Lower priority numbers are selected first.
+ *     Equal-priority LEDs are randomly shuffled.
+ *
+ * DESTINATION:
+ *     Uses DESTINATION_PRIORITY.
+ *     Lower priority numbers are selected first.
+ *     Equal-priority LEDs are randomly shuffled.
+ *
+ * The source and destination orders are generated independently.
+ * The grain state machine pairs them using grainIndex.
+ *
+ * IMPORTANT:
+ *     This only changes LED selection order.
+ *     It does NOT modify the falling path or animation timing.
+ */
+bool buildTransferPlan()
+{
+    // Generate the top slave source sequence.
+    if (!buildPriorityOrder(
+            SOURCE_PRIORITY,
+            SOURCE_MAX_PRIORITY,
+            true,
+            sourceOrder))
+    {
+        return false;
+    }
+
+    // Generate the bottom master destination sequence.
+    if (!buildPriorityOrder(
+            DESTINATION_PRIORITY,
+            DESTINATION_MAX_PRIORITY,
+            false,
+            destinationOrder))
+    {
+        return false;
     }
 
     return true;
-}
-
-
-/*
- * Build the source LED selection order.
- *
- * SELECTION PHASE 1:
- *   Physical rows 1 and 2 retain their original behaviour.
- *
- * SELECTION PHASE 2:
- *   Physical row 3 middle LED is forced to be selected first.
- *
- * SELECTION PHASE 3:
- *   Physical rows 3..11 use progressive centre-first selection.
- *
- *   Each layer exposes its central shell first. Once that shell
- *   is completed, its next outer shell becomes available.
- *
- *   At the same time, completion of a layer's central shell
- *   activates the next layer's central shell.
- *
- *   Therefore a deeper middle particle can be selected before
- *   an outer particle in a previous layer.
- *
- * SELECTION PHASE 4:
- *   Physical rows 12..15 retain the original layer-by-layer
- *   weighted random selection.
- *
- * IMPORTANT:
- *   This function only controls SOURCE LED selection.
- *   Destination selection and falling animation are independent.
- */
-bool buildSourceOrder()
-{
-    uint8_t sourceOffset = 0;
-
-    // --------------------------------------------------------
-    // PHASE 1: FIRST TWO SOURCE LAYERS
-    // --------------------------------------------------------
-
-    for (uint8_t layer = 0;
-         layer < SOURCE_PHYSICS_FIRST_LAYER;
-         ++layer)
-    {
-        const uint8_t count = LAYER_COUNTS[layer];
-
-        uint8_t sourceLayer[MATRIX_SIZE] = {};
-
-        // Copy and rotate the original source LEDs.
-        for (uint8_t i = 0; i < count; ++i)
-        {
-            const uint8_t led = SOURCE_LAYERS[layer][i];
-
-            if (led < 1 || led > 64) {
-                return false;
-            }
-
-            sourceLayer[i] = rotateSlaveLedCCW(led);
-        }
-
-        // Preserve the existing weighted selection for these rows.
-        weightedShuffle(sourceLayer, count);
-
-        for (uint8_t i = 0; i < count; ++i)
-        {
-            sourceOrder[sourceOffset++] = sourceLayer[i];
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // PHASE 2: PREPARE THE PHYSICS SELECTION ZONE
-    // --------------------------------------------------------
-
-    uint8_t physicsLeds
-        [SOURCE_PHYSICS_LAYER_COUNT][MATRIX_SIZE] = {};
-
-    uint8_t physicsCounts
-        [SOURCE_PHYSICS_LAYER_COUNT] = {};
-
-    uint8_t maxDistance
-        [SOURCE_PHYSICS_LAYER_COUNT] = {};
-
-    int8_t currentShell
-        [SOURCE_PHYSICS_LAYER_COUNT] = {};
-
-    bool selected
-        [SOURCE_PHYSICS_LAYER_COUNT][MATRIX_SIZE] = {};
-
-
-    uint8_t remainingGrains = 0;
-
-    for (uint8_t localLayer = 0;
-         localLayer < SOURCE_PHYSICS_LAYER_COUNT;
-         ++localLayer)
-    {
-        const uint8_t actualLayer =
-            SOURCE_PHYSICS_FIRST_LAYER + localLayer;
-
-        const uint8_t count = LAYER_COUNTS[actualLayer];
-
-        physicsCounts[localLayer] = count;
-
-        // Maximum centre distance for this layer.
-        maxDistance[localLayer] =
-            (count - 1U) / 2U;
-
-        // Initially, all physics layers are locked.
-        currentShell[localLayer] = -1;
-
-        remainingGrains += count;
-
-        // Store the rotated source LEDs.
-        for (uint8_t position = 0;
-             position < count;
-             ++position)
-        {
-            const uint8_t led =
-                SOURCE_LAYERS[actualLayer][position];
-
-            if (led < 1 || led > 64) {
-                return false;
-            }
-
-            physicsLeds[localLayer][position] =
-                rotateSlaveLedCCW(led);
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // PHASE 3: FORCE THE THIRD ROW MIDDLE PARTICLE FIRST
-    // --------------------------------------------------------
-
-    // Physical third row contains three LEDs.
-    // Its middle particle must be selected before its two edges.
-    const uint8_t firstMiddlePosition =
-        physicsCounts[0] / 2U;
-
-    sourceOrder[sourceOffset++] =
-        physicsLeds[0][firstMiddlePosition];
-
-    selected[0][firstMiddlePosition] = true;
-    --remainingGrains;
-
-    // The third row's middle shell is complete.
-    // Its two outer LEDs become available.
-    currentShell[0] =
-        (int8_t)maxDistance[0] - 1;
-
-
-    // --------------------------------------------------------
-    // PHASE 4: ACTIVATE THE FOURTH ROW MIDDLE PARTICLES
-    // --------------------------------------------------------
-
-    // The next layer starts with its central shell.
-    // For four LEDs this means the two middle positions.
-    currentShell[1] = maxDistance[1];
-
-    // The first two physics layers are now active:
-    //   Row 3: outer particles
-    //   Row 4: middle particles
-    uint8_t activeLayers = 2;
-
-
-    // --------------------------------------------------------
-    // PHASE 5: PROGRESSIVE CENTRE-TO-EDGE SELECTION
-    // --------------------------------------------------------
-
-    while (remainingGrains > 0)
-    {
-        SourceCandidate candidates
-            [SOURCE_PHYSICS_LAYER_COUNT * MATRIX_SIZE];
-
-        uint8_t candidateCount = 0;
-
-        uint16_t totalWeight = 0;
-
-
-        // Collect the currently available particles.
-        // Only the current shell of each active layer is eligible.
-        for (uint8_t layer = 0;
-             layer < activeLayers;
-             ++layer)
-        {
-            if (currentShell[layer] < 0) {
-                continue;
-            }
-
-            const uint8_t count = physicsCounts[layer];
-
-            for (uint8_t position = 0;
-                 position < count;
-                 ++position)
-            {
-                const uint8_t distance =
-                    sourcePositionDistance(position, count);
-
-                // Ignore already selected particles.
-                if (selected[layer][position]) {
-                    continue;
-                }
-
-                // Only particles in the current shell are eligible.
-                if (distance != (uint8_t)currentShell[layer]) {
-                    continue;
-                }
-
-                const uint8_t weight =
-                    centerProbabilityWeight(position, count);
-
-                candidates[candidateCount].layer = layer;
-                candidates[candidateCount].position = position;
-                candidates[candidateCount].weight = weight;
-
-                ++candidateCount;
-
-                totalWeight += weight;
-            }
-        }
-
-        // No candidate should remain unavailable while grains remain.
-        if (candidateCount == 0 || totalWeight == 0) {
-            return false;
-        }
-
-
-        // ----------------------------------------------------
-        // WEIGHTED RANDOM SELECTION
-        // ----------------------------------------------------
-
-        // Select among currently exposed particles.
-        // Centre particles have higher probability.
-        uint16_t randomValue =
-            (uint16_t)(esp_random() % totalWeight);
-
-        uint8_t selectedCandidate = 0;
-
-        for (uint8_t i = 0; i < candidateCount; ++i)
-        {
-            if (randomValue < candidates[i].weight)
-            {
-                selectedCandidate = i;
-                break;
-            }
-
-            randomValue -= candidates[i].weight;
-        }
-
-        const uint8_t selectedLayer =
-            candidates[selectedCandidate].layer;
-
-        const uint8_t selectedPosition =
-            candidates[selectedCandidate].position;
-
-
-        // Append the selected source LED to the transfer order.
-        sourceOrder[sourceOffset++] =
-            physicsLeds[selectedLayer][selectedPosition];
-
-        selected[selectedLayer][selectedPosition] = true;
-
-        --remainingGrains;
-
-
-        // ----------------------------------------------------
-        // CHECK WHETHER THE CURRENT SHELL IS COMPLETE
-        // ----------------------------------------------------
-
-        const int8_t completedShell =
-            currentShell[selectedLayer];
-
-        if (isSourceShellComplete(
-                selectedLayer,
-                completedShell,
-                physicsCounts,
-                selected))
-        {
-            // The completed shell no longer needs to be selected.
-            // Expose the next shell towards the outside.
-            --currentShell[selectedLayer];
-
-
-            /*
-             * IMPORTANT PHYSICS BEHAVIOUR:
-             *
-             * When the central shell of a layer is completed,
-             * activate the next layer's central shell.
-             *
-             * Previous layers may still contain outer particles.
-             * These particles remain available, but their weights
-             * are lower than the newly exposed middle particles.
-             *
-             * Example:
-             *
-             *   Row 4 middle LEDs: completed.
-             *   Row 4 edge LEDs:   still available, weight 1.
-             *   Row 5 middle LED:  newly available, weight 7.
-             *
-             * Therefore row 5 middle has seven times the relative
-             * selection weight of each individual row 4 edge LED.
-             */
-            if (completedShell ==
-                (int8_t)maxDistance[selectedLayer])
-            {
-                if (activeLayers < SOURCE_PHYSICS_LAYER_COUNT)
-                {
-                    // Activate the next physical row at its centre.
-                    currentShell[activeLayers] =
-                        maxDistance[activeLayers];
-
-                    ++activeLayers;
-                }
-            }
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // PHASE 6: REMAINING FOUR SOURCE LAYERS
-    // --------------------------------------------------------
-
-    // Layers 12..15 keep their previous layer-by-layer behaviour.
-    for (uint8_t layer =
-             SOURCE_PHYSICS_LAST_LAYER + 1;
-         layer < LAYER_TOTAL;
-         ++layer)
-    {
-        const uint8_t count = LAYER_COUNTS[layer];
-
-        uint8_t sourceLayer[MATRIX_SIZE] = {};
-
-        for (uint8_t i = 0; i < count; ++i)
-        {
-            const uint8_t led = SOURCE_LAYERS[layer][i];
-
-            if (led < 1 || led > 64) {
-                return false;
-            }
-
-            sourceLayer[i] = rotateSlaveLedCCW(led);
-        }
-
-        weightedShuffle(sourceLayer, count);
-
-        for (uint8_t i = 0; i < count; ++i)
-        {
-            sourceOrder[sourceOffset++] = sourceLayer[i];
-        }
-    }
-
-    return sourceOffset == GRAIN_TOTAL;
-}
-
-bool buildTransferPlan()
-{
-    uint8_t sourceOffset = 0;
-    uint8_t destinationOffset = 0;
-
-    for (uint8_t layer = 0; layer < LAYER_TOTAL; ++layer) {
-        const uint8_t count = LAYER_COUNTS[layer];
-
-        uint8_t sourceLayer[MATRIX_SIZE] = {};
-        uint8_t destinationLayer[MATRIX_SIZE] = {};
-
-        // Copy the requested source LEDs for this layer.
-        for (uint8_t i = 0; i < count; ++i) {
-            const uint8_t led = SOURCE_LAYERS[layer][i];
-
-            if (led < 1 || led > 64) {
-                return false;
-            }
-
-            sourceLayer[i] = rotateSlaveLedCCW(led);
-        }
-
-        // Lower-module destination layers expand from its outer bottom tip.
-        // Local coordinates: col + row = 14 - layer.
-        // Examples:
-        //   Layer 0: 128
-        //   Layer 1: 120, 127
-        //   Layer 2: 112, 119, 126
-        const int8_t diagonalSum = 14 - (int8_t)layer;
-        uint8_t found = 0;
-
-        for (int8_t row = 0; row < (int8_t)MATRIX_SIZE; ++row) {
-            const int8_t col = diagonalSum - row;
-
-            if (col >= 0 && col < (int8_t)MATRIX_SIZE) {
-                const uint8_t bottomLed =
-                    (uint8_t)(65 + row * 8 + col);
-
-                // Convert global bottom LED number (65..128) to local (1..64),
-                // rotate the BOTTOM MASTER pattern anticlockwise,
-                // then convert back to global numbering.
-                destinationLayer[found++] =
-                    (uint8_t)(64 + rotateLedCCW(bottomLed - 64));
-            }
-        }
-
-        if (found != count) {
-            return false;
-        }
-
-        /*
-        * Independently weighted-shuffle source and destination LEDs.
-        *
-        * SOURCE:
-        * Centre particles in the upper slave have a higher probability
-        * of being selected first.
-        *
-        * DESTINATION:
-        * Centre positions in the lower master have a higher probability
-        * of being selected first.
-        *
-        * Both use the SAME probability distribution:
-        *
-        *   Outer position:       Weight 1
-        *   Second position:      Weight 4
-        *   Third position:       Weight 7
-        *   Centre position:      Weight 10
-        *
-        * Pairing by index gives randomized one-to-one combinations.
-        * No source or destination LED is reused.
-        *
-        * IMPORTANT:
-        * Destination weighting changes WHERE the grain settles.
-        * It does NOT change the falling animation path.
-        */
-        weightedShuffle(sourceLayer, count);
-        weightedShuffle(destinationLayer, count);
-
-        for (uint8_t i = 0; i < count; ++i) {
-            sourceOrder[sourceOffset++] = sourceLayer[i];
-            destinationOrder[destinationOffset++] = destinationLayer[i];
-        }
-    }
-
-    return sourceOffset == GRAIN_TOTAL &&
-           destinationOffset == GRAIN_TOTAL;
 }
 
 // ------------------------------------------------------------
@@ -949,7 +502,10 @@ void reset(uint32_t nowMs)
 
     // Generate a fresh centre-weighted random transfer plan for every cycle.
     // Every source and destination LED is still included exactly once.
-    (void)buildTransferPlan();
+    if (!buildTransferPlan()) {
+    DisplayManager::logMessage("SandClock: Transfer plan generation failed!");
+    return;
+}
 
     // Start the first grain on the next update() call.
     lastGrainFinishMs = nowMs - GRAIN_GAP_MS;
