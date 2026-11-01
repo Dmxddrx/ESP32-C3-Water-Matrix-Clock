@@ -185,6 +185,31 @@ void weightedShuffle(uint8_t *values, uint8_t count)
     }
 }
 
+/*
+ * Rotate an 8x8 LED position 90 degrees anticlockwise.
+ *
+ * Input and output LED numbers are local module numbers: 1..64.
+ *
+ * Coordinate transformation:
+ *
+ *   New X = Old Y
+ *   New Y = 7 - Old X
+ *
+ * This rotates the complete diagonal pattern, including its corners.
+ */
+uint8_t rotateLedCCW(uint8_t led)
+{
+    const uint8_t index = led - 1;
+
+    const uint8_t x = index % MATRIX_SIZE;
+    const uint8_t y = index / MATRIX_SIZE;
+
+    const uint8_t newX = y;
+    const uint8_t newY = 7 - x;
+
+    return (uint8_t)(newY * MATRIX_SIZE + newX + 1);
+}
+
 bool buildTransferPlan()
 {
     uint8_t sourceOffset = 0;
@@ -204,7 +229,7 @@ bool buildTransferPlan()
                 return false;
             }
 
-            sourceLayer[i] = led;
+            sourceLayer[i] = rotateLedCCW(led);
         }
 
         // Lower-module destination layers expand from its outer bottom tip.
@@ -223,7 +248,11 @@ bool buildTransferPlan()
                 const uint8_t bottomLed =
                     (uint8_t)(65 + row * 8 + col);
 
-                destinationLayer[found++] = bottomLed;
+                // Convert global bottom LED number (65..128) to local (1..64),
+                // rotate the BOTTOM MASTER pattern anticlockwise,
+                // then convert back to global numbering.
+                destinationLayer[found++] =
+                    (uint8_t)(64 + rotateLedCCW(bottomLed - 64));
             }
         }
 
@@ -232,14 +261,30 @@ bool buildTransferPlan()
         }
 
         /*
-         * Independently weighted-shuffle source and destination LEDs.
-         *
-         * Centre LEDs are more likely to be selected earlier.
-         * Outer LEDs have lower probability.
-         *
-         * Pairing by index gives randomized one-to-one combinations.
-         * No source or destination LED is reused.
-         */
+        * Independently weighted-shuffle source and destination LEDs.
+        *
+        * SOURCE:
+        * Centre particles in the upper slave have a higher probability
+        * of being selected first.
+        *
+        * DESTINATION:
+        * Centre positions in the lower master have a higher probability
+        * of being selected first.
+        *
+        * Both use the SAME probability distribution:
+        *
+        *   Outer position:       Weight 1
+        *   Second position:      Weight 4
+        *   Third position:       Weight 7
+        *   Centre position:      Weight 10
+        *
+        * Pairing by index gives randomized one-to-one combinations.
+        * No source or destination LED is reused.
+        *
+        * IMPORTANT:
+        * Destination weighting changes WHERE the grain settles.
+        * It does NOT change the falling animation path.
+        */
         weightedShuffle(sourceLayer, count);
         weightedShuffle(destinationLayer, count);
 
@@ -271,37 +316,44 @@ void appendPathPoint(uint8_t x, uint8_t y)
 
 void buildDropPath(uint8_t bottomLed)
 {
-    // Bottom LED numbers are 65..128. Convert to local 0..7 coordinates.
+    // Bottom LED numbers are 65..128.
+    // Convert to local 0..7 coordinates.
     const uint8_t localIndex = (uint8_t)(bottomLed - 65);
+
     const uint8_t targetX = localIndex % MATRIX_SIZE;
     const uint8_t targetY = localIndex / MATRIX_SIZE;
 
     dropPathLength = 0;
     dropPathIndex = 0;
 
+    // After 90-degree anticlockwise rotation, the neck is at (0,7).
     uint8_t x = 0;
-    uint8_t y = 0;
+    uint8_t y = 7;
 
-    // The first grain follows the exact path requested:
-    // 65 -> 74 -> 83 -> 92 -> 101 -> 110 -> 119 -> 128.
-    // For other destinations, follow the same diagonal as far as possible,
-    // then move along the remaining row or column to the selected cell.
+    // The rotated central falling path is:
+    // 121 -> 114 -> 107 -> 100 -> 93 -> 86 -> 79 -> 72.
+    //
+    // Follow the diagonal first, then move along the remaining
+    // horizontal or vertical distance to the selected destination.
     appendPathPoint(x, y);
 
-    while (x < targetX && y < targetY) {
+    while (x < targetX && y > targetY)
+    {
         ++x;
-        ++y;
+        --y;
 
         appendPathPoint(x, y);
     }
 
-    while (x < targetX) {
+    while (x < targetX)
+    {
         ++x;
         appendPathPoint(x, y);
     }
 
-    while (y < targetY) {
-        ++y;
+    while (y > targetY)
+    {
+        --y;
         appendPathPoint(x, y);
     }
 }
