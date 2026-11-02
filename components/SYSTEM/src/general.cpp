@@ -21,6 +21,9 @@ struct ButtonState {
     bool rawState = HIGH;
     bool stableState = HIGH;
     uint32_t rawChangedMs = 0;
+
+    uint32_t pressedSinceMs = 0;
+    bool longPressHandled = false;
 };
 
 ButtonState pageButton;
@@ -39,6 +42,14 @@ float batteryVoltage = 0.0f;
 int batteryPercent = -1;
 bool batteryDataValid = false;
 uint32_t lastBatteryUpdateMs = 0;
+
+// BLE activation conditions.
+constexpr uint32_t WIFI_BLE_TRIGGER_MS = 5UL * 60UL * 1000UL;
+constexpr uint32_t PAGE_BUTTON_BLE_HOLD_MS = 5000UL;
+
+// Time tracking while Wi-Fi is unavailable.
+uint32_t wifiUnavailableSinceMs = 0;
+bool wifiUnavailableTimerActive = false;
 
 const char *modeName(MatrixMode mode)
 {
@@ -70,10 +81,8 @@ void cycleMatrixMode()
 
 void onButtonPressed(uint8_t pin)
 {
-    if (pin == ProjectConfig::BUTTON_PAGE_PIN) {
-        displayPage = (displayPage + 1U) % 3U;
-        DisplayManager::logMessage("Display page: %u", displayPage);
-    } else if (pin == ProjectConfig::BUTTON_MODE_PIN) {
+    // The mode button still cycles the matrix animations.
+    if (pin == ProjectConfig::BUTTON_MODE_PIN) {
         cycleMatrixMode();
     }
 }
@@ -81,14 +90,121 @@ void onButtonPressed(uint8_t pin)
 void updateButton(uint8_t pin, ButtonState &button, uint32_t now)
 {
     const bool raw = digitalRead(pin);
-    if (raw != button.rawState) {
+
+    if (raw != button.rawState)
+    {
         button.rawState = raw;
         button.rawChangedMs = now;
     }
-    if ((uint32_t)(now - button.rawChangedMs) >= ProjectConfig::BUTTON_DEBOUNCE_MS &&
-        button.stableState != button.rawState) {
+
+    // --------------------------------------------------------
+    // PAGE BUTTON: LONG-PRESS BLE ACTIVATION
+    // --------------------------------------------------------
+
+    if (pin == ProjectConfig::BUTTON_PAGE_PIN &&
+        button.stableState == LOW &&
+        button.rawState == LOW &&
+        !button.longPressHandled)
+    {
+        if ((uint32_t)(now - button.pressedSinceMs) >=
+            PAGE_BUTTON_BLE_HOLD_MS)
+        {
+            button.longPressHandled = true;
+
+            if (!BluetoothManager::isEnabled())
+            {
+                BluetoothManager::setEnabled(true);
+
+                DisplayManager::logMessage(
+                    "BLE: activated by 5-second page-button hold"
+                );
+            }
+        }
+    }
+
+    // --------------------------------------------------------
+    // BUTTON DEBOUNCING
+    // --------------------------------------------------------
+
+    if ((uint32_t)(now - button.rawChangedMs) >=
+            ProjectConfig::BUTTON_DEBOUNCE_MS &&
+        button.stableState != button.rawState)
+    {
         button.stableState = button.rawState;
-        if (button.stableState == LOW) onButtonPressed(pin);
+
+        if (button.stableState == LOW)
+        {
+            // Button has been pressed.
+            button.pressedSinceMs = now;
+            button.longPressHandled = false;
+
+            // Mode button acts immediately when pressed.
+            if (pin == ProjectConfig::BUTTON_MODE_PIN) {
+                onButtonPressed(pin);
+            }
+        }
+        else
+        {
+            // Button has been released.
+
+            // A short page-button press changes the OLED page.
+            // A long press was already consumed by BLE activation.
+            if (pin == ProjectConfig::BUTTON_PAGE_PIN &&
+                !button.longPressHandled)
+            {
+                displayPage = (displayPage + 1U) % 3U;
+
+                DisplayManager::logMessage(
+                    "Display page: %u",
+                    displayPage
+                );
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// AUTOMATIC BLUETOOTH ACTIVATION
+// ------------------------------------------------------------
+
+/*
+ * Bluetooth advertising starts automatically when Wi-Fi
+ * has remained disconnected for five continuous minutes.
+ *
+ * The offline timer resets whenever Wi-Fi connects.
+ *
+ * BLE remains enabled after activation until the device
+ * restarts. Manual activation through the page button also
+ * uses the same enabled state.
+ */
+void updateBluetoothActivation(uint32_t now)
+{
+    // Wi-Fi is connected: reset the offline timer.
+    if (WifiManager::isConnected())
+    {
+        wifiUnavailableTimerActive = false;
+        return;
+    }
+
+    // Begin timing a new Wi-Fi outage.
+    if (!wifiUnavailableTimerActive)
+    {
+        wifiUnavailableSinceMs = now;
+        wifiUnavailableTimerActive = true;
+    }
+
+    // Activate Bluetooth after five continuous minutes offline.
+    if ((uint32_t)(now - wifiUnavailableSinceMs) >=
+        WIFI_BLE_TRIGGER_MS)
+    {
+        if (!BluetoothManager::isEnabled())
+        {
+            BluetoothManager::setEnabled(true);
+
+            DisplayManager::logMessage(
+                "BLE: activated after 5 minutes without Wi-Fi"
+            );
+        }
     }
 }
 
@@ -109,6 +225,42 @@ void applyBluetoothCommand(const char *command)
     {
         matrixMode = MatrixMode::LEVEL;
         SandClock::reset(millis());
+    }
+
+    else if (strcmp(command, "WIFI_CONNECT") == 0)
+    {
+        char receivedSsid[33] = {};
+        char receivedPassword[64] = {};
+
+        // Retrieve the SSID and password received through BLE.
+        if (!BluetoothManager::takeWifiCredentials(
+                receivedSsid,
+                sizeof(receivedSsid),
+                receivedPassword,
+                sizeof(receivedPassword)))
+        {
+            DisplayManager::logMessage(
+                "BLE: WiFi provisioning rejected; credentials missing or invalid"
+            );
+
+            return;
+        }
+
+        // Save credentials and start connecting asynchronously.
+        if (WifiManager::setCredentials(
+                receivedSsid,
+                receivedPassword))
+        {
+            DisplayManager::logMessage(
+                "BLE: WiFi credentials accepted; connecting..."
+            );
+        }
+        else
+        {
+            DisplayManager::logMessage(
+                "BLE: unable to save WiFi credentials"
+            );
+        }
     }
 
     else if (strncmp(command, "PAGE=", 5) == 0) {
@@ -398,7 +550,7 @@ void general_init(void)
     // --------------------------------------------------------
 
     pinMode(ProjectConfig::BUTTON_PAGE_PIN, INPUT_PULLUP);
-    pinMode(ProjectConfig::BUTTON_MODE_PIN, INPUT_PULLUP);
+    pinMode(ProjectConfig::BUTTON_MODE_PIN, INPUT_PULLUP);   
 
     const uint32_t now = millis();
 
@@ -410,6 +562,8 @@ void general_init(void)
         digitalRead(ProjectConfig::BUTTON_MODE_PIN);
     modeButton.rawChangedMs = now;
 
+    pageButton.pressedSinceMs = now;
+    pageButton.longPressHandled = false; 
 
     // --------------------------------------------------------
     // 3. INITIALIZE I2C
@@ -443,7 +597,7 @@ void general_init(void)
     MAX7219_Init();
 
     // Use the same brightness variable used by the animations.
-    brightness = 8;
+    brightness = 1;
     MAX7219_SetBrightness(brightness);
 
 
@@ -476,7 +630,9 @@ void general_init(void)
     DisplayManager::logMessage("Initializing Wi-Fi...");
 
     WifiManager::begin();
-
+    // Start tracking the Wi-Fi offline duration.
+    wifiUnavailableSinceMs = millis();
+    wifiUnavailableTimerActive = !WifiManager::isConnected();
 
     // --------------------------------------------------------
     // 9. INITIALIZE BLUETOOTH
@@ -529,6 +685,9 @@ void general_run(void)
 {
     const uint32_t now = millis();
     WifiManager::update();
+    // Check whether BLE should become available.
+    updateBluetoothActivation(now);
+    // Maintain BLE advertising and connections.
     BluetoothManager::update();
     MPU6050::update();
 

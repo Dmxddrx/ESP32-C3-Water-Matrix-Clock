@@ -15,7 +15,7 @@ constexpr uint8_t MATRIX_CLK_PIN = 5;
 constexpr uint8_t MATRIX_MOSI_PIN = 10;
 constexpr uint8_t MATRIX_CS_PIN = 4;
 constexpr uint8_t MATRIX_MODULES = 2;
-constexpr uint8_t MATRIX_DEFAULT_BRIGHTNESS = 2;
+constexpr uint8_t MATRIX_DEFAULT_BRIGHTNESS = 1;
 
 constexpr uint8_t BUTTON_PAGE_PIN = 21;
 constexpr uint8_t BUTTON_MODE_PIN = 20;
