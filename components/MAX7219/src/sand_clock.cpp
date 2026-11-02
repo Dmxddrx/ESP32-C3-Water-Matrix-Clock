@@ -1,6 +1,7 @@
 #include "sand_clock.h"
 #include "max7219.h"
 #include "display_manager.h"
+#include "mpu6050.h"  
 
 #include <esp_system.h>   // ESP32-C3 hardware random number generator
 #include <string.h>
@@ -31,16 +32,40 @@ bool animationComplete = false;
 bool initialized = false;
 
 // Current moving grain's path through the lower module.
-// The route starts at bottom-module LED 65 (local coordinate 0,0).
+// The route starts at the neck: bottom-module LED 121 (local coordinate 0,7).
 uint8_t dropPathX[MATRIX_SIZE];
 uint8_t dropPathY[MATRIX_SIZE];
 uint8_t dropPathLength = 0;
 uint8_t dropPathIndex = 0;
 uint8_t currentDestination = 0;
 
+bool transferPlanValid = false;
+
 uint32_t lastDropStepMs = 0;
 uint32_t lastGrainFinishMs = 0;
 uint32_t completedMs = 0;
+
+// ------------------------------------------------------------
+// AUTOMATIC SAND CLOCK ORIENTATION
+// ------------------------------------------------------------
+
+// These thresholds match the automatic orientation detection
+// used by DisplayManager.
+constexpr int16_t GRAVITY_THRESHOLD = 10000;
+constexpr int16_t DIAGONAL_THRESHOLD = 9000;
+
+// The detected orientation must remain stable for this duration
+// before the matrix animation is rotated.
+constexpr uint32_t POSITION_STABLE_MS = 400;
+
+// Current complete 16x8 matrix orientation.
+bool upsideDown = false;
+
+// Candidate orientation being checked for stability.
+bool candidateUpsideDown = false;
+bool orientationCandidateValid = false;
+
+uint32_t candidateOrientationSinceMs = 0;
 
 /*
  * TOP SLAVE SOURCE PRIORITY MAP
@@ -130,6 +155,95 @@ uint8_t rotateSlaveLedCCW(uint8_t led)
     const uint8_t newY = y;
 
     return (uint8_t)(newY * MATRIX_SIZE + newX + 1);
+}
+
+
+/*
+ * UPDATE SAND CLOCK ORIENTATION
+ *
+ * Uses the same accelerometer thresholds and stability period
+ * as DisplayManager's automatic orientation detection.
+ *
+ * Normal position:
+ *     AZ < -10000
+ *
+ * Upside-down position:
+ *     AZ > +10000
+ *
+ * Diagonal position:
+ *     AX > 9000 && AY > 9000
+ *
+ * Sideways and transition positions are ignored.
+ * The previously selected matrix orientation is maintained
+ * while the device is sideways or moving.
+ *
+ * A new orientation must remain stable for 400 ms before
+ * the complete SandClock framebuffer is rotated.
+ *
+ * Returns true when the active orientation changes.
+ */
+bool updateUpsideDownOrientation(uint32_t nowMs)
+{
+    const MPU6050::Data &imu = MPU6050::getData();
+
+    if (!imu.valid) {
+        return false;
+    }
+
+    // Match the diagonal-position detection precedence
+    // used by DisplayManager.
+    if (imu.axRaw > DIAGONAL_THRESHOLD &&
+        imu.ayRaw > DIAGONAL_THRESHOLD)
+    {
+        orientationCandidateValid = false;
+        return false;
+    }
+
+    bool detectedUpsideDown;
+
+    // Detect the two main hourglass orientations.
+    if (imu.azRaw > GRAVITY_THRESHOLD)
+    {
+        detectedUpsideDown = true;
+    }
+    else if (imu.azRaw < -GRAVITY_THRESHOLD)
+    {
+        detectedUpsideDown = false;
+    }
+    else
+    {
+        // Ignore sideways and transition positions.
+        // Keep the previously selected matrix orientation.
+        orientationCandidateValid = false;
+        return false;
+    }
+
+    // Start checking a new candidate orientation.
+    if (!orientationCandidateValid ||
+        detectedUpsideDown != candidateUpsideDown)
+    {
+        candidateUpsideDown = detectedUpsideDown;
+        candidateOrientationSinceMs = nowMs;
+        orientationCandidateValid = true;
+
+        return false;
+    }
+
+    // Wait until the candidate orientation remains stable.
+    if ((uint32_t)(nowMs - candidateOrientationSinceMs) <
+        POSITION_STABLE_MS)
+    {
+        return false;
+    }
+
+    // Change the complete matrix orientation only when necessary.
+    if (upsideDown != candidateUpsideDown)
+    {
+        upsideDown = candidateUpsideDown;
+        return true;
+    }
+
+    return false;
 }
 
 /*
@@ -369,6 +483,93 @@ void buildDropPath(uint8_t bottomLed)
     }
 }
 
+/*
+ * SET SAND CLOCK PIXEL
+ *
+ * The SandClock uses a logical 16x8 framebuffer:
+ *
+ *     X = 0..7    Slave module
+ *     X = 8..15   Master module
+ *
+ * Normal orientation:
+ *     Draw pixels at their original coordinates.
+ *
+ * Upside-down orientation:
+ *
+ *     SLAVE MODULE:
+ *         Moves to the opposite module position.
+ *         Rotates 90 degrees clockwise.
+ *
+ *         New X = 7 - Old Y
+ *         New Y = Old X
+ *
+ *     MASTER MODULE:
+ *         Moves to the opposite module position.
+ *         Rotates 90 degrees anticlockwise.
+ *
+ *         New X = Old Y
+ *         New Y = 7 - Old X
+ *
+ * This transformation:
+ *     - Swaps the two module positions.
+ *     - Rotates the slave 90 degrees clockwise.
+ *     - Rotates the master 90 degrees anticlockwise.
+ *     - Rotates settled grains and moving grains together.
+ *
+ * The original priority maps, transfer plan and grain states
+ * remain unchanged.
+ */
+void setSandClockPixel(uint8_t x, uint8_t y, uint8_t state)
+{
+    // Protect against invalid framebuffer coordinates.
+    if (x >= MATRIX_SIZE * 2 || y >= MATRIX_SIZE) {
+        return;
+    }
+
+    if (upsideDown)
+    {
+        // Preserve the original coordinates before transformation.
+        const uint8_t oldX = x;
+        const uint8_t oldY = y;
+
+        if (oldX < MATRIX_SIZE)
+        {
+            // ------------------------------------------------
+            // SLAVE MODULE
+            // Move to the opposite module position.
+            // Rotate 90 degrees CLOCKWISE.
+            // ------------------------------------------------
+
+            const uint8_t localX = oldX;
+
+            x = (uint8_t)(
+                MATRIX_SIZE + (MATRIX_SIZE - 1 - oldY)
+            );
+
+            y = localX;
+        }
+        else
+        {
+            // ------------------------------------------------
+            // MASTER MODULE
+            // Move to the opposite module position.
+            // Rotate 90 degrees ANTICLOCKWISE.
+            // ------------------------------------------------
+
+            const uint8_t localX =
+                (uint8_t)(oldX - MATRIX_SIZE);
+
+            x = oldY;
+
+            y = (uint8_t)(
+                MATRIX_SIZE - 1 - localX
+            );
+        }
+    }
+
+    MAX7219_SetPixel(x, y, state);
+}
+
 // ------------------------------------------------------------
 // FRAMEBUFFER RENDERING
 // ------------------------------------------------------------
@@ -384,7 +585,8 @@ void render()
             const uint8_t x = i % MATRIX_SIZE;
             const uint8_t y = i / MATRIX_SIZE;
 
-            MAX7219_SetPixel(x, y, 1);
+            // Apply complete framebuffer rotation when upside down.
+            setSandClockPixel(x, y, 1);
         }
     }
 
@@ -393,8 +595,9 @@ void render()
         for (uint8_t x = 0; x < MATRIX_SIZE; ++x) {
 
             if (lowerSettled[y][x]) {
-                MAX7219_SetPixel(
-                    (int16_t)(MATRIX_SIZE + x),
+                // Apply complete framebuffer rotation when upside down.
+                setSandClockPixel(
+                    (uint8_t)(MATRIX_SIZE + x),
                     y,
                     1
                 );
@@ -407,8 +610,9 @@ void render()
         dropPathLength > 0 &&
         dropPathIndex < dropPathLength) {
 
-        MAX7219_SetPixel(
-            (int16_t)(MATRIX_SIZE + dropPathX[dropPathIndex]),
+        // The falling path is rotated together with both modules.
+        setSandClockPixel(
+            (uint8_t)(MATRIX_SIZE + dropPathX[dropPathIndex]),
             dropPathY[dropPathIndex],
             1
         );
@@ -487,6 +691,9 @@ void reset(uint32_t nowMs)
         initialized = true;
     }
 
+    // Update the active orientation before drawing the initial frame.
+    updateUpsideDownOrientation(nowMs);
+
     memset(sourceRemoved, 0, sizeof(sourceRemoved));
     memset(lowerSettled, 0, sizeof(lowerSettled));
     memset(sourceOrder, 0, sizeof(sourceOrder));
@@ -500,12 +707,22 @@ void reset(uint32_t nowMs)
     dropPathLength = 0;
     dropPathIndex = 0;
 
-    // Generate a fresh centre-weighted random transfer plan for every cycle.
-    // Every source and destination LED is still included exactly once.
+    // A new transfer plan must be validated before animation starts.
+    transferPlanValid = false;
+
+    // Generate a fresh randomized transfer plan.
+    // Every source and destination LED must be included exactly once.
     if (!buildTransferPlan()) {
-    DisplayManager::logMessage("SandClock: Transfer plan generation failed!");
-    return;
-}
+
+        DisplayManager::logMessage(
+            "SandClock: Transfer plan generation failed!"
+        );
+
+        render();
+        return;
+    }
+
+    transferPlanValid = true;
 
     // Start the first grain on the next update() call.
     lastGrainFinishMs = nowMs - GRAIN_GAP_MS;
@@ -520,6 +737,18 @@ void update(uint32_t nowMs)
 {
     if (!initialized) {
         begin();
+        return;
+    }
+
+    // Detect orientation changes continuously.
+    // If the device becomes upside down or returns to normal,
+    // redraw the complete current animation in the new orientation.
+    if (updateUpsideDownOrientation(nowMs)) {
+        render();
+    }
+
+    // Do not animate if transfer-plan generation failed.
+    if (!transferPlanValid) {
         return;
     }
 

@@ -1,0 +1,41 @@
+here my values for 4 positions
+
+normal position (current one) without motion, need rotate display 90 deg anticlockwise
+AX = 1516
+AY = 62
+AZ = -14814
+GX = -165
+GY = 280
+GZ = -5
+
+upside down, without motion, rotate display 90 deg clockwise
+AX = 100
+AY = 1080
+AZ = =17000
+GX = -280
+GY = 280
+GZ = 180
+
+fall down side 1, without motion, no need rotate screen
+AX = 600
+AY = -16206
+AZ = 1600
+GX = -170
+GY = 280
+GZ = 3
+
+fall down side 2, without motion, need to rotate 180 deg
+AX = 12150
+AY = 11300
+AZ = 1900
+GX = -170
+GY = 280
+GZ = -5
+
+position 1 , need rotate display 90 deg anticlockwise, need new clock UI due to screen change 128x64 to 64x128.
+
+position 2.need rotate display 90 deg clockwise, can use same UI in position 1 due to screen change 128x64 to 64x128.
+
+position 3, no need rotate screen
+
+posistion 4, need to rotate 180 deg, no need new ui, screen still 128x64
