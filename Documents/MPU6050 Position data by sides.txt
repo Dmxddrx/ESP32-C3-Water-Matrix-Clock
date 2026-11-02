@@ -2,7 +2,7 @@ here my values for 4 positions
 
 normal position (current one) without motion, need rotate display 90 deg anticlockwise
 AX = 1516
-AY = 62
+AY = 100
 AZ = -14814
 GX = -165
 GY = 280

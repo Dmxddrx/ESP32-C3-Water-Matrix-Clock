@@ -8,6 +8,7 @@
 #include "bluetooth_manager.h"
 #include "analog_manager.h"
 #include "sand_clock.h"
+#include "water_animation.h"
 
 #include <Wire.h>
 #include <math.h>
@@ -59,6 +60,11 @@ void cycleMatrixMode()
         SandClock::reset(millis());
     }
 
+    else if (matrixMode == MatrixMode::WATER)
+    {
+        WaterAnimation::reset(millis());
+    }
+
     DisplayManager::logMessage("Matrix mode: %s", modeName(matrixMode));
 }
 
@@ -90,12 +96,19 @@ void applyBluetoothCommand(const char *command)
 {
     if (command == nullptr || command[0] == '\0') return;
 
-    if (strcmp(command, "MODE=WATER") == 0) matrixMode = MatrixMode::WATER;
-    else if (strcmp(command, "MODE=HEART") == 0) matrixMode = MatrixMode::HEART;
-
-    else if (strcmp(command, "MODE=LEVEL") == 0) {
-    matrixMode = MatrixMode::LEVEL;
-    SandClock::reset(millis());
+    if (strcmp(command, "MODE=WATER") == 0)
+    {
+        matrixMode = MatrixMode::WATER;
+        WaterAnimation::reset(millis());
+    }
+    else if (strcmp(command, "MODE=HEART") == 0)
+    {
+        matrixMode = MatrixMode::HEART;
+    }
+    else if (strcmp(command, "MODE=LEVEL") == 0)
+    {
+        matrixMode = MatrixMode::LEVEL;
+        SandClock::reset(millis());
     }
 
     else if (strncmp(command, "PAGE=", 5) == 0) {
@@ -114,96 +127,6 @@ void applyBluetoothCommand(const char *command)
         return;
     }
     DisplayManager::logMessage("BLE command applied: %s", command);
-}
-
-void drawWaterFrame(uint32_t nowMs)
-{
-    //MAX7219_Clear();
-
-    const MPU6050::Data &imu = MPU6050::getData();
-    const bool imuValid = imu.valid && MPU6050::isReady();
-
-    float pitch = imuValid ? imu.pitchDeg : 0.0f;
-    float roll  = imuValid ? imu.rollDeg  : 0.0f;
-
-    // Limit extreme angles to keep the liquid visible in 16x8 pixels.
-    if (pitch < -30.0f) pitch = -30.0f;
-    if (pitch >  30.0f) pitch =  30.0f;
-    if (roll  < -30.0f) roll  = -30.0f;
-    if (roll  >  30.0f) roll  =  30.0f;
-
-    const float seconds = nowMs * 0.001f;
-    const float radians = roll * 0.01745329252f;
-
-    // Pitch changes the mean fill height.
-    const float baseSurface = 4.0f - pitch * 0.035f;
-
-    // Roll tilts the liquid surface across the 16-pixel width.
-    const float slope = -tanf(radians) * 0.60f;
-
-    float surfaceRows[16] = {};
-
-    // Draw water inside the tank, leaving space for its walls.
-    for (int16_t x = 1; x < 15; ++x) {
-        float ripple = 0.0f;
-
-        if (matrixMode == MatrixMode::WATER) {
-            ripple = 0.30f * sinf(
-                x * 0.75f + seconds * 2.2f
-            );
-        }
-
-        float surfaceY =
-            baseSurface + ((float)x - 7.5f) * slope + ripple;
-
-        if (surfaceY < 1.0f) surfaceY = 1.0f;
-        if (surfaceY > 6.0f) surfaceY = 6.0f;
-
-        surfaceRows[x] = surfaceY;
-
-        // Fill the pixels below the local water surface.
-        for (int16_t y = 1; y <= 6; ++y) {
-            if ((float)y >= surfaceY) {
-                MAX7219_SetPixel(x, y, 1);
-            }
-        }
-    }
-
-    // Tank side walls.
-    for (int16_t y = 1; y <= 7; ++y) {
-        MAX7219_SetPixel(0,  y, 1);
-        MAX7219_SetPixel(15, y, 1);
-    }
-
-    // Tank bottom.
-    for (int16_t x = 0; x < 16; ++x) {
-        MAX7219_SetPixel(x, 7, 1);
-    }
-
-    // Moving bubbles, only when they lie below the water surface.
-    if (matrixMode == MatrixMode::WATER) {
-        const int16_t bubbleX1 =
-            (int16_t)((frameCounter / 4U) % 12U) + 2;
-
-        const int16_t bubbleY1 =
-            2 + (int16_t)((frameCounter / 15U) % 4U);
-
-        const int16_t bubbleX2 =
-            14 - (int16_t)((frameCounter / 6U) % 12U);
-
-        const int16_t bubbleY2 =
-            2 + (int16_t)((frameCounter / 18U) % 4U);
-
-        if ((float)bubbleY1 >= surfaceRows[bubbleX1]) {
-            MAX7219_SetPixel(bubbleX1, bubbleY1, 0);
-        }
-
-        if ((float)bubbleY2 >= surfaceRows[bubbleX2]) {
-            MAX7219_SetPixel(bubbleX2, bubbleY2, 0);
-        }
-    }
-
-    //MAX7219_Update();
 }
 
 void drawMatrixFrame(uint32_t nowMs)
@@ -227,9 +150,7 @@ void drawMatrixFrame(uint32_t nowMs)
     }
     else if (matrixMode == MatrixMode::WATER)
     {
-        MAX7219_Clear();
-        drawWaterFrame(nowMs);
-        MAX7219_Update();
+        WaterAnimation::update(nowMs);
     }
     else if (matrixMode == MatrixMode::LEVEL)
     {
@@ -278,45 +199,146 @@ void updateBleStatus(uint32_t now)
 
 void testSandFlowPattern()
 {
-    constexpr uint16_t STEP_DELAY_MS = 180;
+    constexpr uint16_t DIAGONAL_STEP_MS = 95;
+    constexpr uint16_t FILL_STEP_MS = 100;
+    constexpr uint16_t EMPTY_STEP_MS = 75;
+
+    // --------------------------------------------------------
+    // STARTUP: CLEAR BOTH MATRICES
+    // --------------------------------------------------------
 
     MAX7219_Clear();
     MAX7219_Update();
-    delay(500);
 
-    // ------------------------------------------
-    // TOP SLAVE
-    // Physical LEFT -> RIGHT
-    // Logical (0,0) -> (7,7)
-    // ------------------------------------------
+    delay(300);
+
+
+    // --------------------------------------------------------
+    // STAGE 1: SIMULTANEOUS DIAGONAL SWEEP
+    // --------------------------------------------------------
+
+    /*
+     * TOP SLAVE
+     * Physical LEFT -> RIGHT
+     * Logical (0,0) -> (7,7)
+     *
+     * BOTTOM MASTER
+     * Physical LEFT -> RIGHT
+     * Logical (8,7) -> (15,0)
+     *
+     * Both diagonal patterns illuminate simultaneously.
+     * Previously illuminated pixels remain ON, creating
+     * a growing diagonal trail.
+     */
 
     for (int8_t i = 0; i < 8; ++i)
     {
-        MAX7219_Clear();
-
+        // Top slave diagonal.
         MAX7219_SetPixel(i, i, 1);
 
-        MAX7219_Update();
-        delay(STEP_DELAY_MS);
-    }
-
-    // ------------------------------------------
-    // BOTTOM MASTER
-    // Physical LEFT -> RIGHT
-    // Logical (8,7) -> (15,0)
-    // ------------------------------------------
-
-    for (int8_t i = 0; i < 8; ++i)
-    {
-        MAX7219_Clear();
-
+        // Bottom master diagonal.
         MAX7219_SetPixel(8 + i, 7 - i, 1);
 
         MAX7219_Update();
-        delay(STEP_DELAY_MS);
+
+        delay(DIAGONAL_STEP_MS);
     }
 
-    MAX7219_Clear();
+    delay(300);
+
+
+    // --------------------------------------------------------
+    // STAGE 2: CENTER-OUTWARD MATRIX EXPANSION
+    // --------------------------------------------------------
+
+    /*
+     * Begin filling from the two central rows.
+     *
+     * Expansion sequence:
+     *
+     *     Rows 3 and 4
+     *     Rows 2 and 5
+     *     Rows 1 and 6
+     *     Rows 0 and 7
+     *
+     * Both 8x8 modules expand simultaneously.
+     *
+     * When this stage finishes, all 128 LEDs are ON.
+     */
+
+    for (int8_t offset = 0; offset < 4; ++offset)
+    {
+        const uint8_t upperRow = 3 - offset;
+        const uint8_t lowerRow = 4 + offset;
+
+        // Fill both rows across the complete 16x8 framebuffer.
+        for (uint8_t x = 0; x < 16; ++x)
+        {
+            MAX7219_SetPixel(x, upperRow, 1);
+            MAX7219_SetPixel(x, lowerRow, 1);
+        }
+
+        MAX7219_Update();
+
+        delay(FILL_STEP_MS);
+    }
+
+    // Hold the completely illuminated display.
+    delay(500);
+
+
+    // --------------------------------------------------------
+    // STAGE 3: CENTER-OUTWARD RECTANGULAR CLEARING
+    // --------------------------------------------------------
+
+    /*
+    * Clear the complete 16x8 framebuffer using expanding
+    * rectangular layers.
+    *
+    * Clearing sequence:
+    *
+    *     1. Central 2x2 region
+    *     2. First surrounding rectangular layer
+    *     3. Second surrounding rectangular layer
+    *     4. Continue expanding towards the outer edges
+    *
+    * The clearing begins at the centre of both matrices
+    * and gradually spreads towards all four edges.
+    *
+    * Every LED is switched OFF exactly once.
+    */
+
+    for (uint8_t layer = 0; layer < 8; ++layer)
+    {
+        for (uint8_t y = 0; y < 8; ++y)
+        {
+            for (uint8_t x = 0; x < 16; ++x)
+            {
+                // Calculate distance from the central 2x2 region.
+                const uint8_t distanceX =
+                    (x < 8) ? (7 - x) : (x - 8);
+
+                const uint8_t distanceY =
+                    (y < 4) ? (3 - y) : (y - 4);
+
+                // Chebyshev distance creates rectangular layers.
+                const uint8_t distance =
+                    (distanceX > distanceY)
+                        ? distanceX
+                        : distanceY;
+
+                // Turn OFF only the current rectangular layer.
+                if (distance == layer)
+                {
+                    MAX7219_SetPixel(x, y, 0);
+                }
+            }
+        }
+
+        MAX7219_Update();
+
+        delay(EMPTY_STEP_MS);
+    }
     MAX7219_Update();
 }
 
@@ -364,10 +386,16 @@ void updatePowerMonitor(uint32_t now)
 
 void general_init(void)
 {
+    // --------------------------------------------------------
+    // 1. INITIALIZE ANALOG / POWER MONITORING
+    // --------------------------------------------------------
+
     AnalogManager::begin();
 
-    DisplayManager::logMessage("ESP32-C3 Water Matrix Clock");
-    DisplayManager::logMessage("Starting peripherals...");
+
+    // --------------------------------------------------------
+    // 2. INITIALIZE BUTTONS
+    // --------------------------------------------------------
 
     pinMode(ProjectConfig::BUTTON_PAGE_PIN, INPUT_PULLUP);
     pinMode(ProjectConfig::BUTTON_MODE_PIN, INPUT_PULLUP);
@@ -382,44 +410,117 @@ void general_init(void)
         digitalRead(ProjectConfig::BUTTON_MODE_PIN);
     modeButton.rawChangedMs = now;
 
+
+    // --------------------------------------------------------
+    // 3. INITIALIZE I2C
+    // --------------------------------------------------------
+
     Wire.begin(
         ProjectConfig::I2C_SDA_PIN,
         ProjectConfig::I2C_SCL_PIN,
         ProjectConfig::I2C_FREQUENCY_HZ
     );
+
     Wire.setTimeOut(50);
 
-    DisplayManager::logMessage("Initializing MAX7219...");
-    MAX7219_Init();
-    SandClock::begin();
 
-    // Use the same brightness variable used by the animation.
+    // --------------------------------------------------------
+    // 4. INITIALIZE OLED DISPLAY
+    // --------------------------------------------------------
+
+    DisplayManager::begin();
+
+    DisplayManager::logMessage("ESP32-C3 Water Matrix Clock");
+    DisplayManager::logMessage("Starting peripherals...");
+
+
+    // --------------------------------------------------------
+    // 5. INITIALIZE MAX7219 MATRIX
+    // --------------------------------------------------------
+
+    DisplayManager::logMessage("Initializing MAX7219...");
+
+    MAX7219_Init();
+
+    // Use the same brightness variable used by the animations.
     brightness = 8;
     MAX7219_SetBrightness(brightness);
 
-    DisplayManager::logMessage("Initializing OLED...");
-    DisplayManager::begin();
+
+    // --------------------------------------------------------
+    // 6. INITIALIZE MPU6050
+    // --------------------------------------------------------
 
     DisplayManager::logMessage("Initializing MPU6050...");
+
     MPU6050::begin();
 
+
+    // --------------------------------------------------------
+    // 7. INITIALIZE MATRIX ANIMATIONS
+    // --------------------------------------------------------
+
+    // Initialize water animation after the MPU6050.
+    DisplayManager::logMessage("Initializing water animation...");
+    WaterAnimation::begin();
+
+    // Initialize digital sand clock after the MPU6050.
+    DisplayManager::logMessage("Initializing sand clock...");
+    SandClock::begin();
+
+
+    // --------------------------------------------------------
+    // 8. INITIALIZE WI-FI
+    // --------------------------------------------------------
+
     DisplayManager::logMessage("Initializing Wi-Fi...");
+
     WifiManager::begin();
 
+
+    // --------------------------------------------------------
+    // 9. INITIALIZE BLUETOOTH
+    // --------------------------------------------------------
+
     DisplayManager::logMessage("Initializing Bluetooth...");
+
     BluetoothManager::begin();
 
+
+    // --------------------------------------------------------
+    // 10. INITIALIZE PERIODIC UPDATE TIMERS
+    // --------------------------------------------------------
+
     lastMatrixFrameMs = millis();
+
     lastDisplayRefreshMs =
         millis() - ProjectConfig::DISPLAY_REFRESH_MS;
+
     lastBleStatusMs =
         millis() - ProjectConfig::BLE_STATUS_REFRESH_MS;
 
+
+    // --------------------------------------------------------
+    // 11. TEST MAX7219 LED ORIENTATION
+    // --------------------------------------------------------
+
     DisplayManager::logMessage("Testing sand flow direction...");
+
     testSandFlowPattern();
 
+
+    // --------------------------------------------------------
+    // 12. DRAW INITIAL MATRIX FRAME
+    // --------------------------------------------------------
+
     DisplayManager::logMessage("Drawing initial matrix frame...");
+
     drawMatrixFrame(millis());
+
+
+    // --------------------------------------------------------
+    // INITIALIZATION COMPLETE
+    // --------------------------------------------------------
 
     DisplayManager::logMessage("Initialization complete.");
 }
