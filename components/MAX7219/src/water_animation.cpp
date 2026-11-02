@@ -79,21 +79,31 @@ bool orientationCandidateValid = false;
 
 uint32_t candidateOrientationSinceMs = 0;
 
-// ------------------------------------------------------------
-// GRAVITY DIRECTION
-// ------------------------------------------------------------
+/*
+ * MPU6050 TO MATRIX AXIS MAPPING
+ *
+ * MPU6050 mounting:
+ *
+ *     Z axis = Matrix top-to-bottom.
+ *     Y axis = Matrix right-to-left.
+ *     X axis = Outside the 2D matrix plane.
+ *
+ * Gravity conversion:
+ *
+ *     Matrix X = +AY
+ *     Matrix Y = -AZ
+ *
+ * The signs account for the accelerometer measuring
+ * specific force opposite to gravity.
+ *
+ * Reverse a sign only if physical testing shows that
+ * the water flows in the opposite direction.
+ */
+constexpr float SENSOR_Y_TO_MATRIX_X_SIGN = 1.0f;
+constexpr float SENSOR_Z_TO_MATRIX_Y_SIGN = -1.0f;
 
-// These signs define how MPU6050 pitch and roll map to
-// the logical MAX7219 framebuffer.
-//
-// Change one sign to -1.0f if the water moves in the
-// opposite direction from the physical tilt.
-//
-// Default:
-//     Positive roll  -> positive X direction.
-//     Positive pitch -> positive Y direction.
-constexpr float FLOW_X_SIGN = 1.0f;
-constexpr float FLOW_Y_SIGN = 1.0f;
+// Minimum usable acceleration projection onto the matrix plane.
+constexpr float MIN_IN_PLANE_ACCELERATION = 2000.0f;
 
 float gravityX = 0.0f;
 float gravityY = 1.0f;
@@ -187,26 +197,36 @@ bool updateUpsideDownOrientation(uint32_t nowMs)
     return false;
 }
 
-// ------------------------------------------------------------
-// UPDATE GRAVITY DIRECTION
-// ------------------------------------------------------------
-
 /*
  * UPDATE GRAVITY DIRECTION
  *
- * Uses the filtered MPU6050 pitch and roll angles.
+ * Uses the raw MPU6050 accelerometer readings.
  *
- * Pitch controls the logical Y-axis gravity component.
- * Roll controls the logical X-axis gravity component.
+ * Physical axis mapping:
  *
- * The vector is normalized so the movement algorithm can
- * compare horizontal, vertical and diagonal movements.
+ *     MPU Y -> Matrix horizontal direction.
+ *     MPU Z -> Matrix vertical direction.
  *
- * When the device is approximately level, use the default
- * downward direction along positive Y.
+ * Gravity calculation:
  *
- * When upside down, reverse the gravity direction in the
- * logical framebuffer.
+ *     gravityX = +AY
+ *     gravityY = -AZ
+ *
+ * MPU X is ignored because it is perpendicular to the
+ * 2D matrix plane.
+ *
+ * The gravity vector is normalized so the movement
+ * algorithm can compare horizontal, vertical and
+ * diagonal movements.
+ *
+ * IMPORTANT:
+ *     The raw accelerometer already detects the reversal
+ *     of gravity when the device is flipped upside down.
+ *
+ *     Therefore, do NOT manually reverse gravityX/gravityY
+ *     using the upsideDown variable.
+ *
+ *     upsideDown is used only for matrix display rotation.
  */
 void updateGravityDirection()
 {
@@ -217,43 +237,26 @@ void updateGravityDirection()
         return;
     }
 
-    constexpr float RADIANS_PER_DEGREE =
-    0.017453292519943295f;
+    // Convert MPU6050 sensor axes into matrix gravity axes.
+    float gx =
+        (float)imu.ayRaw * SENSOR_Y_TO_MATRIX_X_SIGN;
 
-    const float pitchRad =
-        imu.pitchDeg * RADIANS_PER_DEGREE;
+    float gy =
+        (float)imu.azRaw * SENSOR_Z_TO_MATRIX_Y_SIGN;
 
-    const float rollRad =
-        imu.rollDeg * RADIANS_PER_DEGREE;
-
-    // Calculate the gravity projection along the display plane.
-    float gx = sinf(rollRad) * FLOW_X_SIGN;
-    float gy = sinf(pitchRad) * FLOW_Y_SIGN;
-
-    // Normalize the gravity vector.
+    // Calculate the in-plane gravity magnitude.
     const float magnitude =
         sqrtf((gx * gx) + (gy * gy));
 
-    if (magnitude < 0.08f)
-    {
-        // No meaningful in-plane tilt detected.
-        // Keep the water settled towards the default bottom.
-        gx = 0.0f;
-        gy = 1.0f;
-    }
-    else
-    {
-        gx /= magnitude;
-        gy /= magnitude;
+    // If gravity has almost no projection onto the matrix plane,
+    // retain the previous valid direction.
+    if (magnitude < MIN_IN_PLANE_ACCELERATION) {
+        return;
     }
 
-    // A 180-degree device flip reverses the gravity direction
-    // in the logical matrix coordinate system.
-    if (upsideDown)
-    {
-        gx = -gx;
-        gy = -gy;
-    }
+    // Normalize the gravity vector.
+    gx /= magnitude;
+    gy /= magnitude;
 
     gravityX = gx;
     gravityY = gy;
