@@ -341,31 +341,6 @@ void enterDeepSleep()
 
     DisplayManager::prepareForSleep();
 
-    // --------------------------------------------------------
-    // PUT MPU6050 INTO SLEEP
-    // --------------------------------------------------------
-
-    MPU6050::sleep();
-
-    // --------------------------------------------------------
-    // DISABLE WIRELESS PERIPHERALS
-    // --------------------------------------------------------
-
-    BluetoothManager::shutdown();
-    WifiManager::shutdown();
-
-    delay(20);
-
-    // --------------------------------------------------------
-    // START DEEP SLEEP
-    // --------------------------------------------------------
-
-    Serial.println("Power: entering deep sleep");
-
-    Serial.flush();
-
-    esp_deep_sleep_start();
-
 }
 
 // ------------------------------------------------------------
