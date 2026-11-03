@@ -1,7 +1,6 @@
 
 #include "power_manager.h"
 
-#include "project_config.h"
 #include "max7219.h"
 #include "display_manager.h"
 #include "wifi_manager.h"
@@ -10,8 +9,7 @@
 
 #include <Arduino.h>
 #include <math.h>
-#include <stdlib.h>
-
+#include <stdint.h>
 
 namespace PowerManager {
 namespace {
@@ -23,8 +21,8 @@ namespace {
 // Return to the clock page after one minute without page interaction.
 constexpr uint32_t CLOCK_PAGE_TIMEOUT_MS = 60UL * 1000UL;
 
-// Enter deep sleep after 15 minutes without user activity or motion.
-constexpr uint32_t DEEP_SLEEP_TIMEOUT_MS = 15UL * 60UL * 1000UL;
+// Enter display idle mode after 15 minutes without user activity or motion.
+constexpr uint32_t DISPLAY_IDLE_TIMEOUT_MS = 15UL * 60UL * 1000UL;
 
 // ------------------------------------------------------------
 // MOTION DETECTION
@@ -40,8 +38,9 @@ constexpr int32_t MOTION_ACCEL_DELTA_THRESHOLD = 2500;
 // Avoid repeatedly processing motion events too frequently.
 constexpr uint32_t MOTION_EVENT_COOLDOWN_MS = 1500;
 
-// Do not allow sleep if the MPU6050 stops providing valid samples.
+// Do not allow idle mode if the MPU6050 stops providing valid samples.
 constexpr uint32_t IMU_VALID_TIMEOUT_MS = 500;
+
 
 // ------------------------------------------------------------
 // ACTIVITY TIMERS
@@ -53,6 +52,10 @@ uint32_t lastMotionEventMs = 0;
 uint32_t lastValidImuMs = 0;
 
 bool initialized = false;
+
+// True when OLED and MAX7219 displays are switched off.
+bool idleMode = false;
+
 
 // ------------------------------------------------------------
 // MPU6050 MOTION TRACKING
@@ -66,6 +69,13 @@ int16_t previousAzRaw = 0;
 
 uint32_t lastProcessedImuTimestamp = 0;
 
+
+// ------------------------------------------------------------
+// BLUETOOTH CONNECTION TRACKING
+// ------------------------------------------------------------
+
+// Used to detect when a phone connects while the clock is idle.
+bool previousBleConnected = false;
 
 
 // ------------------------------------------------------------
@@ -81,55 +91,6 @@ int32_t absoluteDifference(int32_t a, int32_t b)
         : difference;
 }
 
-// True when OLED and MAX7219 displays are switched off.
-bool idleMode = false;
-
-// ------------------------------------------------------------
-// INITIALIZE WAKE-UP PINS
-// ------------------------------------------------------------
-
-/*
- * CHECK DEEP-SLEEP WAKE-UP PINS
- *
- * ESP32-C3 GPIO0..GPIO5 support deep-sleep GPIO wake-up.
- *
- * The project buttons are active LOW:
- *
- *     Not pressed = HIGH
- *     Pressed     = LOW
- *
- * Both buttons are configured as wake-up sources.
- */
-bool validateWakeupPins()
-{
-    const uint8_t pagePin = ProjectConfig::BUTTON_PAGE_PIN;
-    const uint8_t modePin = ProjectConfig::BUTTON_MODE_PIN;
-
-    if (pagePin == modePin)
-    {
-        DisplayManager::logMessage(
-            "Power: wake-up buttons cannot share a GPIO"
-        );
-
-        return false;
-    }
-
-    if (!esp_sleep_is_valid_wakeup_gpio((gpio_num_t)pagePin) ||
-        !esp_sleep_is_valid_wakeup_gpio((gpio_num_t)modePin))
-    {
-        DisplayManager::logMessage(
-            "Power: button GPIOs are not valid deep-sleep wake pins"
-        );
-
-        DisplayManager::logMessage(
-            "Power: ESP32-C3 requires RTC GPIO0..GPIO5"
-        );
-
-        return false;
-    }
-
-    return true;
-}
 
 // ------------------------------------------------------------
 // DETECT SIGNIFICANT PHYSICAL MOTION
@@ -172,6 +133,7 @@ bool detectLargeMotion(
 
     lastProcessedImuTimestamp = imu.timestampMs;
     lastValidImuMs = nowMs;
+
 
     // --------------------------------------------------------
     // GYROSCOPE MOTION DETECTION
@@ -236,26 +198,7 @@ bool detectLargeMotion(
     return true;
 }
 
-// ------------------------------------------------------------
-// ENTER DEEP SLEEP
-// ------------------------------------------------------------
 
-/*
- * ENTER DEEP SLEEP
- *
- * Before sleeping:
- *
- * 1. Configure both buttons as active-LOW wake-up sources.
- * 2. Turn off MAX7219 displays.
- * 3. Turn off the OLED.
- * 4. Put MPU6050 into sleep mode.
- * 5. Disable Wi-Fi.
- * 6. Disable Bluetooth.
- *
- * On button wake-up, the ESP32-C3 restarts from setup().
- *
- * The regular initialization sequence then restores all peripherals.
- */
 // ------------------------------------------------------------
 // ENTER DISPLAY IDLE MODE
 // ------------------------------------------------------------
@@ -279,6 +222,10 @@ bool detectLargeMotion(
  * IMPORTANT:
  *     This is NOT ESP32 deep sleep.
  *     The CPU and application loop continue running.
+ *
+ *     The MAX7219 display RAM is preserved during shutdown.
+ *     This allows the previous matrix frame to reappear
+ *     immediately when normal operation resumes.
  */
 void enterIdleMode()
 {
@@ -290,9 +237,8 @@ void enterIdleMode()
     // TURN OFF MAX7219 MATRICES
     // --------------------------------------------------------
 
-    MAX7219_Clear();
-    MAX7219_Update();
-
+    // Do not clear the MAX7219 framebuffer here.
+    // Hardware shutdown preserves its display RAM.
     MAX7219_SetShutdown(true);
 
 
@@ -338,6 +284,7 @@ void enterIdleMode()
  * This is called when:
  *     - A physical button is pressed.
  *     - Significant device movement is detected.
+ *     - A phone connects through BLE.
  *     - A Bluetooth command is received.
  */
 void exitIdleMode()
@@ -353,6 +300,7 @@ void exitIdleMode()
     // RESTORE MAX7219 MATRICES
     // --------------------------------------------------------
 
+    // Restore the preserved MAX7219 framebuffer.
     MAX7219_SetShutdown(false);
 
 
@@ -374,6 +322,9 @@ void exitIdleMode()
         "Power: display idle mode exited"
     );
 }
+
+} // namespace (closes the anonymous namespace)
+
 
 // ------------------------------------------------------------
 // PUBLIC API
@@ -397,15 +348,28 @@ void begin(uint32_t nowMs)
 
     idleMode = false;
 
+    // Record the current BLE connection state.
+    previousBleConnected = BluetoothManager::isConnected();
 }
+
 
 // ------------------------------------------------------------
 // REGISTER USER ACTIVITY
 // ------------------------------------------------------------
 
+/*
+ * Any physical button, BLE command or significant movement
+ * counts as user activity.
+ *
+ * If the clock is in display-idle mode, restore the displays
+ * and resume Wi-Fi.
+ */
 void notifyUserActivity(uint32_t nowMs)
 {
     lastUserActivityMs = nowMs;
+
+    // Restore the device when activity is detected.
+    exitIdleMode();
 }
 
 
@@ -413,12 +377,33 @@ void notifyUserActivity(uint32_t nowMs)
 // REGISTER PAGE INTERACTION
 // ------------------------------------------------------------
 
-void notifyUserActivity(uint32_t nowMs)
+/*
+ * A manual OLED page change restarts both:
+ *
+ * 1. The one-minute clock-page timer.
+ * 2. The 15-minute inactivity timer.
+ */
+void notifyPageInteraction(uint32_t nowMs)
 {
-    lastUserActivityMs = nowMs;
+    lastPageInteractionMs = nowMs;
 
-    // User activity restores the displays if the device is idle.
-    exitIdleMode();
+    notifyUserActivity(nowMs);
+}
+
+
+// ------------------------------------------------------------
+// CHECK DISPLAY-IDLE STATE
+// ------------------------------------------------------------
+
+/*
+ * Returns true when OLED and MAX7219 displays are switched OFF.
+ *
+ * general.cpp should use this function to prevent normal
+ * matrix animation rendering while the clock is idle.
+ */
+bool isIdle()
+{
+    return idleMode;
 }
 
 
@@ -437,8 +422,29 @@ void update(
         return;
     }
 
+
     // --------------------------------------------------------
-    // 1. DETECT LARGE PHYSICAL MOTION
+    // 1. DETECT BLUETOOTH CONNECTION
+    // --------------------------------------------------------
+
+    const bool bleConnected =
+        BluetoothManager::isConnected();
+
+    // A newly connected phone wakes the clock.
+    if (bleConnected && !previousBleConnected)
+    {
+        notifyUserActivity(nowMs);
+
+        DisplayManager::logMessage(
+            "Power: mobile phone connected; waking display"
+        );
+    }
+
+    previousBleConnected = bleConnected;
+
+
+    // --------------------------------------------------------
+    // 2. DETECT LARGE PHYSICAL MOTION
     // --------------------------------------------------------
 
     if (detectLargeMotion(imu, nowMs))
@@ -447,8 +453,9 @@ void update(
         notifyUserActivity(nowMs);
     }
 
+
     // --------------------------------------------------------
-    // 2. AUTOMATICALLY RETURN TO CLOCK PAGE
+    // 3. AUTOMATICALLY RETURN TO CLOCK PAGE
     // --------------------------------------------------------
 
     if (displayPage != 0 &&
@@ -463,8 +470,9 @@ void update(
         );
     }
 
+
     // --------------------------------------------------------
-    // 3. CHECK DISPLAY-IDLE INACTIVITY
+    // 4. CHECK DISPLAY-IDLE INACTIVITY
     // --------------------------------------------------------
 
     if (idleMode) {
@@ -472,7 +480,7 @@ void update(
     }
 
     if ((uint32_t)(nowMs - lastUserActivityMs) <
-        DEEP_SLEEP_TIMEOUT_MS)
+        DISPLAY_IDLE_TIMEOUT_MS)
     {
         return;
     }
@@ -487,7 +495,7 @@ void update(
 
 
     // --------------------------------------------------------
-    // 4. ENTER DISPLAY IDLE MODE
+    // 5. ENTER DISPLAY IDLE MODE
     // --------------------------------------------------------
 
     enterIdleMode();

@@ -699,8 +699,9 @@ void general_run(void)
     // UPDATE MATRIX ANIMATION
     // --------------------------------------------------------
 
-    if ((uint32_t)(now - lastMatrixFrameMs) >=
-        ProjectConfig::MATRIX_FRAME_MS)
+    if (!PowerManager::isIdle() &&
+        (uint32_t)(now - lastMatrixFrameMs) >=
+            ProjectConfig::MATRIX_FRAME_MS)
     {
         lastMatrixFrameMs = now;
         drawMatrixFrame(now);

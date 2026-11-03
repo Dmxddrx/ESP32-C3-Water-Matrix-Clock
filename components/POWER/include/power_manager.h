@@ -16,6 +16,9 @@ namespace PowerManager {
     // This also refreshes the inactivity timer.
     void notifyPageInteraction(uint32_t nowMs);
 
+    // Check whether the device is in display-idle mode.
+    bool isIdle();
+    
     // Update motion detection, automatic page return and sleep.
     void update(
         uint32_t nowMs,
@@ -23,6 +26,7 @@ namespace PowerManager {
         const MPU6050::Data &imu
     );
 
+    
 }
 
 #endif
