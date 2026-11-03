@@ -176,6 +176,23 @@ void update()
     latest = sample;
     lastSampleMs = now;
 }
+// ------------------------------------------------------------
+// MPU6050 HARDWARE SLEEP
+// ------------------------------------------------------------
+
+void sleep()
+{
+    if (!ready) {
+        return;
+    }
+
+    // Set SLEEP bit in PWR_MGMT_1 register.
+    writeRegister(REG_PWR_MGMT_1, 0x40);
+
+    ready = false;
+    latest.valid = false;
+    filterInitialized = false;
+}
 
 bool isReady() { return ready; }
 uint8_t address() { return deviceAddress; }

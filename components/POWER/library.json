@@ -1,0 +1,7 @@
+{
+  "name": "Power Manager",
+  "version": "1.0.0",
+  "description": "Power management library for handling various power-related operations",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

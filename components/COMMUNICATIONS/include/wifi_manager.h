@@ -25,6 +25,9 @@ namespace WifiManager {
         const char *password
     );
 
+    // Disable Wi-Fi before ESP32 deep sleep.
+void shutdown();
+
 }
 
 #endif

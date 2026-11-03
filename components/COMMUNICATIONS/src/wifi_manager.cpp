@@ -495,4 +495,18 @@ const char *ssid()
     return currentSsid;
 }
 
+// ------------------------------------------------------------
+// WIFI SHUTDOWN
+// ------------------------------------------------------------
+
+void shutdown()
+{
+    // Disconnect and turn off the Wi-Fi radio.
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+
+    startRequested = false;
+    ntpConfigured = false;
+}
+
 } // namespace WifiManager

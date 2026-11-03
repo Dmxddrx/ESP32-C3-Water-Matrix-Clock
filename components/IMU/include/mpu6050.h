@@ -23,5 +23,7 @@ bool isReady();
 uint8_t address();
 const Data &getData();
 }
+// Put the MPU6050 into hardware sleep mode.
+void sleep();
 
 #endif

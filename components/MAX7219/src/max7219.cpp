@@ -50,6 +50,28 @@ void MAX7219_SetBrightness(uint8_t value)
     if (initialized) writeBroadcast(REG_INTENSITY, brightness);
 }
 
+/*
+ * MAX7219 HARDWARE SHUTDOWN
+ *
+ * REG_SHUTDOWN:
+ *     0x00 = Shutdown mode.
+ *     0x01 = Normal operation.
+ *
+ * The matrices retain their configuration registers.
+ * MAX7219_Init() restores normal operation after ESP32 wake-up.
+ */
+void MAX7219_SetShutdown(bool shutdown)
+{
+    if (!initialized) {
+        return;
+    }
+
+    writeBroadcast(
+        REG_SHUTDOWN,
+        shutdown ? 0x00 : 0x01
+    );
+}
+
 uint8_t MAX7219_GetBrightness(void)
 {
     return brightness;

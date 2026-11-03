@@ -31,7 +31,8 @@ void begin();
 void showStartupMessage(const char *message);
 void logMessage(const char *format, ...);
 void update(const Status &status);
-
+// Turn off the OLED panel before ESP32 deep sleep.
+void prepareForSleep();
 
 }
 

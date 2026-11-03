@@ -9,6 +9,7 @@
 #include "analog_manager.h"
 #include "sand_clock.h"
 #include "water_animation.h"
+#include "power_manager.h"
 
 #include <Wire.h>
 #include <math.h>
@@ -71,9 +72,17 @@ void cycleMatrixMode()
 
 void onButtonPressed(uint8_t pin)
 {
+    const uint32_t now = millis();
+
+    // Every physical button press counts as user activity.
+    PowerManager::notifyUserActivity(now);
+
     if (pin == ProjectConfig::BUTTON_PAGE_PIN)
     {
         displayPage = (displayPage + 1U) % 3U;
+
+        // Restart the one-minute automatic clock-page timer.
+        PowerManager::notifyPageInteraction(now);
 
         DisplayManager::logMessage(
             "Display page: %u",
@@ -131,6 +140,9 @@ void updateBluetoothActivation(uint32_t now)
 
 void applyBluetoothCommand(const char *command)
 {
+    // A command from the mobile app also counts as user activity.
+PowerManager::notifyUserActivity(millis());
+
     if (command == nullptr || command[0] == '\0') return;
 
     if (strcmp(command, "MODE=WATER") == 0)
@@ -186,7 +198,13 @@ void applyBluetoothCommand(const char *command)
 
     else if (strncmp(command, "PAGE=", 5) == 0) {
         const int value = atoi(command + 5);
-        if (value >= 0 && value <= 2) displayPage = (uint8_t)value;
+        if (value >= 0 && value <= 2)
+        {
+            displayPage = (uint8_t)value;
+
+            // Restart the automatic clock-page timer.
+            PowerManager::notifyPageInteraction(millis());
+        }
     } else if (strncmp(command, "BRIGHT=", 7) == 0) {
         const int value = atoi(command + 7);
         if (value >= 0 && value <= 15) {
@@ -601,6 +619,14 @@ void general_init(void)
 
 
     // --------------------------------------------------------
+    // INITIALIZE POWER MANAGEMENT
+    // --------------------------------------------------------
+
+    // Begin the inactivity, motion and automatic page timers.
+    // Start the timer only after all peripherals are initialized.
+    PowerManager::begin(millis());
+
+    // --------------------------------------------------------
     // INITIALIZATION COMPLETE
     // --------------------------------------------------------
 
@@ -611,24 +637,86 @@ void general_init(void)
 void general_run(void)
 {
     const uint32_t now = millis();
+
+    // --------------------------------------------------------
+    // UPDATE CONNECTIVITY
+    // --------------------------------------------------------
+
     WifiManager::update();
     BluetoothManager::update();
+
+
+    // --------------------------------------------------------
+    // UPDATE MPU6050
+    // --------------------------------------------------------
+
     MPU6050::update();
 
-    updateButton(ProjectConfig::BUTTON_PAGE_PIN, pageButton, now);
-    updateButton(ProjectConfig::BUTTON_MODE_PIN, modeButton, now);
+
+    // --------------------------------------------------------
+    // UPDATE PHYSICAL BUTTONS
+    // --------------------------------------------------------
+
+    updateButton(
+        ProjectConfig::BUTTON_PAGE_PIN,
+        pageButton,
+        now
+    );
+
+    updateButton(
+        ProjectConfig::BUTTON_MODE_PIN,
+        modeButton,
+        now
+    );
+
+
+    // --------------------------------------------------------
+    // PROCESS BLUETOOTH COMMANDS
+    // --------------------------------------------------------
 
     char command[48];
-    if (BluetoothManager::takeCommand(command, sizeof(command))) {
+
+    if (BluetoothManager::takeCommand(
+            command,
+            sizeof(command)))
+    {
         applyBluetoothCommand(command);
     }
 
-    if ((uint32_t)(now - lastMatrixFrameMs) >= ProjectConfig::MATRIX_FRAME_MS) {
+
+    // --------------------------------------------------------
+    // UPDATE POWER MANAGEMENT
+    // --------------------------------------------------------
+
+    PowerManager::update(
+        now,
+        displayPage,
+        MPU6050::getData()
+    );
+
+
+    // --------------------------------------------------------
+    // UPDATE MATRIX ANIMATION
+    // --------------------------------------------------------
+
+    if ((uint32_t)(now - lastMatrixFrameMs) >=
+        ProjectConfig::MATRIX_FRAME_MS)
+    {
         lastMatrixFrameMs = now;
         drawMatrixFrame(now);
     }
 
+
+    // --------------------------------------------------------
+    // UPDATE POWER MONITOR
+    // --------------------------------------------------------
+
     updatePowerMonitor(now);
+
+
+    // --------------------------------------------------------
+    // UPDATE OLED AND BLUETOOTH STATUS
+    // --------------------------------------------------------
 
     updateDisplay(now);
     updateBleStatus(now);

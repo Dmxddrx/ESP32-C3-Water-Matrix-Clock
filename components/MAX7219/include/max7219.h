@@ -30,5 +30,7 @@ void MAX7219_ScrollText(const char *str, uint32_t speed_ms, const FontDef_t *fon
 void MAX7219_ScrollIcon(const IconDef_t *icon, uint32_t speed_ms);
 void MAX7219_ScrollTextWithIcon(const char *str, const IconDef_t *icon,
                                 uint32_t speed_ms, const FontDef_t *font);
+// Put both MAX7219 modules into or out of hardware shutdown.
+void MAX7219_SetShutdown(bool shutdown);
 
 #endif

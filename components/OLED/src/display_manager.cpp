@@ -1042,3 +1042,19 @@ void update(const Status &status)
 }
 
 } // namespace DisplayManager
+// ------------------------------------------------------------
+// PREPARE OLED FOR DEEP SLEEP
+// ------------------------------------------------------------
+
+void prepareForSleep()
+{
+    if (!displayReady) {
+        return;
+    }
+
+    display.clearDisplay();
+    display.display();
+
+    // Send SSD1306 display OFF command.
+    display.ssd1306_command(SSD1306_DISPLAYOFF);
+}
