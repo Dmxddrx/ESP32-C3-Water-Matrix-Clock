@@ -482,7 +482,9 @@ void setStatus(
     uint8_t brightness
 )
 {
-    if (statusCharacteristic == nullptr) {
+    // Do not generate or update application status data
+    // when no BLE client is connected.
+    if (statusCharacteristic == nullptr || !isConnected()) {
         return;
     }
 
@@ -506,9 +508,8 @@ void setStatus(
         strlen(status) + 1
     );
 
-    if (isConnected()) {
-        statusCharacteristic->notify();
-    }
+    // Send status only to a connected BLE client.
+    statusCharacteristic->notify();
 }
 
 
