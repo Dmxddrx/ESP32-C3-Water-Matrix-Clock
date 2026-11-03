@@ -119,31 +119,15 @@ void updateButton(uint8_t pin, ButtonState &button, uint32_t now)
     }
 }
 
-// ------------------------------------------------------------
-// AUTOMATIC BLUETOOTH ACTIVATION
-// ------------------------------------------------------------
-
-/*
- * Bluetooth advertising starts automatically when Wi-Fi
- * has remained disconnected for five continuous minutes.
- *
- * The offline timer resets whenever Wi-Fi connects.
- *
- * BLE remains enabled after activation until the device
- * restarts. Manual activation through the page button also
- * uses the same enabled state.
- */
-void updateBluetoothActivation(uint32_t now)
-{
-    
-}
 
 void applyBluetoothCommand(const char *command)
 {
-    // A command from the mobile app also counts as user activity.
-PowerManager::notifyUserActivity(millis());
+    if (command == nullptr || command[0] == '\0') {
+        return;
+    }
 
-    if (command == nullptr || command[0] == '\0') return;
+    // A valid command from the mobile app counts as user activity.
+    PowerManager::notifyUserActivity(millis());
 
     if (strcmp(command, "MODE=WATER") == 0)
     {
@@ -579,10 +563,14 @@ void general_init(void)
 
     if (BluetoothManager::begin())
     {
-        BluetoothManager::setEnabled(true);
-
         DisplayManager::logMessage(
             "BLE: continuous advertising enabled"
+        );
+    }
+    else
+    {
+        DisplayManager::logMessage(
+            "BLE: initialization failed"
         );
     }
 
@@ -696,16 +684,17 @@ void general_run(void)
 
 
     // --------------------------------------------------------
-    // UPDATE MATRIX ANIMATION
+    // UPDATE OLED AND BLUETOOTH STATUS
     // --------------------------------------------------------
 
-    if (!PowerManager::isIdle() &&
-        (uint32_t)(now - lastMatrixFrameMs) >=
-            ProjectConfig::MATRIX_FRAME_MS)
+    // Do not update the OLED framebuffer while the panel is OFF.
+    if (!PowerManager::isIdle())
     {
-        lastMatrixFrameMs = now;
-        drawMatrixFrame(now);
+        updateDisplay(now);
     }
+
+    // BLE status remains available while the OLED is idle.
+    updateBleStatus(now);
 
 
     // --------------------------------------------------------
