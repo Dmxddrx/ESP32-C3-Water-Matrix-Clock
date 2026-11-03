@@ -12,9 +12,6 @@
 #include <math.h>
 #include <stdlib.h>
 
-#include <esp_sleep.h>
-#include <esp_idf_version.h>
-#include <driver/gpio.h>
 
 namespace PowerManager {
 namespace {
@@ -69,12 +66,7 @@ int16_t previousAzRaw = 0;
 
 uint32_t lastProcessedImuTimestamp = 0;
 
-// ------------------------------------------------------------
-// DEEP-SLEEP WAKE-UP CONFIGURATION
-// ------------------------------------------------------------
 
-bool wakeupPinsValid = false;
-bool wakeupConfigurationFailed = false;
 
 // ------------------------------------------------------------
 // ABSOLUTE DIFFERENCE
@@ -88,6 +80,9 @@ int32_t absoluteDifference(int32_t a, int32_t b)
         ? -difference
         : difference;
 }
+
+// True when OLED and MAX7219 displays are switched off.
+bool idleMode = false;
 
 // ------------------------------------------------------------
 // INITIALIZE WAKE-UP PINS
@@ -261,79 +256,45 @@ bool detectLargeMotion(
  *
  * The regular initialization sequence then restores all peripherals.
  */
-void enterDeepSleep()
+// ------------------------------------------------------------
+// ENTER DISPLAY IDLE MODE
+// ------------------------------------------------------------
+
+/*
+ * ENTER DISPLAY IDLE MODE
+ *
+ * After 15 minutes without user activity:
+ *
+ * 1. Turn OFF both MAX7219 modules.
+ * 2. Turn OFF the OLED panel.
+ * 3. Disconnect Wi-Fi and disable its radio.
+ *
+ * Bluetooth remains advertising and connected clients
+ * remain available.
+ *
+ * MPU6050 remains active for motion detection.
+ *
+ * The ESP32 system clock continues running without Wi-Fi.
+ *
+ * IMPORTANT:
+ *     This is NOT ESP32 deep sleep.
+ *     The CPU and application loop continue running.
+ */
+void enterIdleMode()
 {
-    if (!wakeupPinsValid || wakeupConfigurationFailed) {
-        return;
-    }
-
-    const uint8_t pagePin = ProjectConfig::BUTTON_PAGE_PIN;
-    const uint8_t modePin = ProjectConfig::BUTTON_MODE_PIN;
-
-    // Do not enter sleep while either button is being held.
-    if (digitalRead(pagePin) == LOW ||
-        digitalRead(modePin) == LOW)
-    {
-        return;
-    }
-
-    // Ensure both RTC-capable pins are configured as inputs.
-    pinMode(pagePin, INPUT_PULLUP);
-    pinMode(modePin, INPUT_PULLUP);
-
-    // Build a wake-up mask containing both button GPIOs.
-    const uint64_t wakeupMask =
-        (1ULL << pagePin) |
-        (1ULL << modePin);
-
-    // --------------------------------------------------------
-    // CONFIGURE ACTIVE-LOW DEEP-SLEEP WAKE-UP
-    // --------------------------------------------------------
-
-    esp_err_t wakeupResult;
-
-#if ESP_IDF_VERSION_MAJOR >= 6
-
-    // ESP-IDF 6.x and later.
-    wakeupResult =
-        esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
-            wakeupMask,
-            ESP_GPIO_WAKEUP_GPIO_LOW
-        );
-
-#else
-
-    // ESP-IDF versions before 6.x.
-    wakeupResult =
-        esp_deep_sleep_enable_gpio_wakeup(
-            wakeupMask,
-            ESP_GPIO_WAKEUP_GPIO_LOW
-        );
-
-#endif
-
-    if (wakeupResult != ESP_OK)
-    {
-        DisplayManager::logMessage(
-            "Power: deep-sleep wake-up configuration failed: %d",
-            (int)wakeupResult
-        );
-
-        // Avoid repeatedly attempting an invalid sleep configuration.
-        wakeupConfigurationFailed = true;
-
+    if (idleMode) {
         return;
     }
 
     // --------------------------------------------------------
-    // TURN OFF MATRIX DISPLAYS
+    // TURN OFF MAX7219 MATRICES
     // --------------------------------------------------------
 
     MAX7219_Clear();
     MAX7219_Update();
 
-    // Use the MAX7219 hardware shutdown register.
     MAX7219_SetShutdown(true);
+
 
     // --------------------------------------------------------
     // TURN OFF OLED
@@ -341,6 +302,77 @@ void enterDeepSleep()
 
     DisplayManager::prepareForSleep();
 
+
+    // --------------------------------------------------------
+    // DISCONNECT WIFI
+    // --------------------------------------------------------
+
+    WifiManager::shutdown();
+
+
+    // --------------------------------------------------------
+    // KEEP BLUETOOTH AND MPU6050 RUNNING
+    // --------------------------------------------------------
+
+    // Do NOT call BluetoothManager::shutdown().
+    // Do NOT call MPU6050::sleep().
+    // Do NOT call esp_deep_sleep_start().
+
+    idleMode = true;
+
+    DisplayManager::logMessage(
+        "Power: display idle mode entered; BLE remains active"
+    );
+}
+
+
+// ------------------------------------------------------------
+// EXIT DISPLAY IDLE MODE
+// ------------------------------------------------------------
+
+/*
+ * EXIT DISPLAY IDLE MODE
+ *
+ * Restore the displays and resume Wi-Fi.
+ *
+ * This is called when:
+ *     - A physical button is pressed.
+ *     - Significant device movement is detected.
+ *     - A Bluetooth command is received.
+ */
+void exitIdleMode()
+{
+    if (!idleMode) {
+        return;
+    }
+
+    idleMode = false;
+
+
+    // --------------------------------------------------------
+    // RESTORE MAX7219 MATRICES
+    // --------------------------------------------------------
+
+    MAX7219_SetShutdown(false);
+
+
+    // --------------------------------------------------------
+    // RESTORE OLED
+    // --------------------------------------------------------
+
+    DisplayManager::wakeFromSleep();
+
+
+    // --------------------------------------------------------
+    // RESUME WIFI
+    // --------------------------------------------------------
+
+    WifiManager::resume();
+
+
+    DisplayManager::logMessage(
+        "Power: display idle mode exited"
+    );
 }
 
 // ------------------------------------------------------------
@@ -363,16 +395,7 @@ void begin(uint32_t nowMs)
     previousMotionSampleValid = false;
     lastProcessedImuTimestamp = 0;
 
-    wakeupConfigurationFailed = false;
-
-    wakeupPinsValid = validateWakeupPins();
-
-    if (wakeupPinsValid)
-    {
-        DisplayManager::logMessage(
-            "Power: deep-sleep wake-up pins ready"
-        );
-    }
+    idleMode = false;
 
 }
 
@@ -390,12 +413,12 @@ void notifyUserActivity(uint32_t nowMs)
 // REGISTER PAGE INTERACTION
 // ------------------------------------------------------------
 
-void notifyPageInteraction(uint32_t nowMs)
+void notifyUserActivity(uint32_t nowMs)
 {
-    lastPageInteractionMs = nowMs;
+    lastUserActivityMs = nowMs;
 
-    // Changing the OLED page is also user activity.
-    notifyUserActivity(nowMs);
+    // User activity restores the displays if the device is idle.
+    exitIdleMode();
 }
 
 
@@ -441,8 +464,12 @@ void update(
     }
 
     // --------------------------------------------------------
-    // 3. CHECK DEEP-SLEEP INACTIVITY
+    // 3. CHECK DISPLAY-IDLE INACTIVITY
     // --------------------------------------------------------
+
+    if (idleMode) {
+        return;
+    }
 
     if ((uint32_t)(nowMs - lastUserActivityMs) <
         DEEP_SLEEP_TIMEOUT_MS)
@@ -450,19 +477,20 @@ void update(
         return;
     }
 
-    // Do not sleep if the MPU6050 has stopped providing
-    // valid sensor samples. Motion detection must be available.
+    // Do not enter idle mode if the MPU6050 has stopped
+    // providing valid samples. Movement detection must remain active.
     if ((uint32_t)(nowMs - lastValidImuMs) >
         IMU_VALID_TIMEOUT_MS)
     {
         return;
     }
 
+
     // --------------------------------------------------------
-    // 4. ENTER DEEP SLEEP
+    // 4. ENTER DISPLAY IDLE MODE
     // --------------------------------------------------------
 
-    enterDeepSleep();
+    enterIdleMode();
 }
 
 } // namespace PowerManager

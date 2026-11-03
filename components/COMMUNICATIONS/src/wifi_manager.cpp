@@ -42,6 +42,8 @@ char activePassword[MAX_PASSWORD_LENGTH + 1] = {};
 
 bool credentialsAvailable = false;
 
+bool wifiPaused = false;
+
 
 // ------------------------------------------------------------
 // CONNECTION STATE
@@ -200,6 +202,8 @@ void loadCredentials()
 
 void begin()
 {
+    wifiPaused = false;
+
     WiFi.mode(WIFI_STA);
 
     WiFi.setAutoReconnect(true);
@@ -240,6 +244,11 @@ void begin()
 void update()
 {
     const uint32_t now = millis();
+
+
+    if (wifiPaused) {
+        return;
+    }
 
     // --------------------------------------------------------
     // WIFI CONNECTED
@@ -396,6 +405,11 @@ bool setCredentials(
     // START NEW WIFI CONNECTION
     // --------------------------------------------------------
 
+    wifiPaused = false;
+
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+
     // Disconnect from the previous network without powering off Wi-Fi.
     WiFi.disconnect(false, false);
 
@@ -430,13 +444,10 @@ bool isConnected()
 
 bool isTimeValid()
 {
-    if (!ntpConfigured) {
-        return false;
-    }
-
+    // System time remains valid even while Wi-Fi is disabled,
+    // provided it was synchronized previously.
     const time_t now = time(nullptr);
 
-    // Reject an unset/reset clock near January 1970.
     return now > 1700000000;
 }
 
@@ -501,12 +512,63 @@ const char *ssid()
 
 void shutdown()
 {
+    if (wifiPaused) {
+        return;
+    }
+
+    wifiPaused = true;
+
     // Disconnect and turn off the Wi-Fi radio.
     WiFi.disconnect(true, false);
     WiFi.mode(WIFI_OFF);
 
     startRequested = false;
+
+    // NTP time already synchronized remains available through
+    // the ESP32 system clock. We will configure NTP again when
+    // Wi-Fi is resumed.
     ntpConfigured = false;
+
+    DisplayManager::logMessage(
+        "WiFi: radio disabled for idle mode"
+    );
+}
+
+
+// ------------------------------------------------------------
+// WIFI RESUME
+// ------------------------------------------------------------
+
+void resume()
+{
+    if (!wifiPaused) {
+        return;
+    }
+
+    wifiPaused = false;
+
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+
+    if (!hasCredentials()) {
+        DisplayManager::logMessage(
+            "WiFi: no credentials available after resume"
+        );
+
+        return;
+    }
+
+    WiFi.begin(
+        activeSsid,
+        activePassword
+    );
+
+    startRequested = true;
+    lastConnectAttemptMs = millis();
+
+    DisplayManager::logMessage(
+        "WiFi: reconnecting after idle mode"
+    );
 }
 
 } // namespace WifiManager

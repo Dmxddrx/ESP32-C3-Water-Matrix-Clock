@@ -4,6 +4,8 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <BLEAdvertising.h>
+#include <BLEAdvertisementData.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -355,21 +357,45 @@ bool begin()
 
 
     // --------------------------------------------------------
-    // CONFIGURE ADVERTISING
+    // CONFIGURE BLE ADVERTISING
     // --------------------------------------------------------
 
     BLEAdvertising *advertising =
         BLEDevice::getAdvertising();
 
+    if (advertising == nullptr)
+    {
+        DisplayManager::logMessage(
+            "BLE: advertising object unavailable"
+        );
+
+        return false;
+    }
+
+    // Advertise the service UUID in the primary advertisement.
     advertising->addServiceUUID(SERVICE_UUID);
+
+    // Enable scan-response packets.
     advertising->setScanResponse(true);
 
-    // Do not advertise immediately at startup.
-    advertisingEnabled = false;
+    // Explicitly include the device name in the scan response.
+    // MIT App Inventor searches using both device name and service UUID.
+    BLEAdvertisementData scanResponseData;
+
+    scanResponseData.setName(DEVICE_NAME);
+
+    advertising->setScanResponseData(scanResponseData);
+
+    // Initialize advertising state.
     previouslyConnected = false;
+    advertisingEnabled = true;
+
+    // Start advertising immediately.
+    // BLE remains available independently of Wi-Fi.
+    BLEDevice::startAdvertising();
 
     DisplayManager::logMessage(
-        "BLE: initialized as %s; advertising disabled",
+        "BLE: advertising started as %s",
         DEVICE_NAME
     );
 

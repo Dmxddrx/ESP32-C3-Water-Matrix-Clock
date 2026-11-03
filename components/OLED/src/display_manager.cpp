@@ -1059,4 +1059,22 @@ void prepareForSleep()
     display.ssd1306_command(SSD1306_DISPLAYOFF);
 }
 
+// ------------------------------------------------------------
+// WAKE OLED FROM DISPLAY IDLE MODE
+// ------------------------------------------------------------
+
+void wakeFromSleep()
+{
+    if (!displayReady) {
+        return;
+    }
+
+    // Send SSD1306 display ON command.
+    display.ssd1306_command(SSD1306_DISPLAYON);
+
+    // Clear the old framebuffer and prepare for a fresh frame.
+    display.clearDisplay();
+    display.display();
+}
+
 } // namespace DisplayManager

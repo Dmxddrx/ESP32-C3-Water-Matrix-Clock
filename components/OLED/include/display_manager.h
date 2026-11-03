@@ -33,6 +33,8 @@ void logMessage(const char *format, ...);
 void update(const Status &status);
 // Turn off the OLED panel before ESP32 deep sleep.
 void prepareForSleep();
+// Restore the OLED panel after display idle mode.
+void wakeFromSleep();
 
 }
 
