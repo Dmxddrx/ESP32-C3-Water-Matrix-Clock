@@ -1035,7 +1035,7 @@ void update(const Status &status)
         }
 
         drawModeFooter(status);
-        drawLogLine();
+        //drawLogLine();
     }
 
     display.display();
