@@ -15,6 +15,10 @@
 #define WIFI_PASSWORD ""
 #endif
 
+#ifndef WIFI_USE_HARDCODED_CREDENTIALS
+#define WIFI_USE_HARDCODED_CREDENTIALS 0
+#endif
+
 
 namespace WifiManager {
 namespace {
@@ -100,7 +104,7 @@ bool hasCredentials()
 
 
 // ------------------------------------------------------------
-// LOAD SAVED WIFI CREDENTIALS
+// LOAD WIFI CREDENTIALS
 // ------------------------------------------------------------
 
 /*
@@ -108,11 +112,16 @@ bool hasCredentials()
  *
  * Priority:
  *
- * 1. Previously saved credentials from ESP32 NVS.
- * 2. Compile-time credentials from arduino_secrets.h.
+ * If WIFI_USE_HARDCODED_CREDENTIALS = 1:
+ *     1. Use arduino_secrets.h.
+ *     2. Fall back to NVS only if hardcoded credentials are invalid.
  *
- * This allows the device to remember its Wi-Fi network
- * after a restart.
+ * If WIFI_USE_HARDCODED_CREDENTIALS = 0:
+ *     1. Use previously saved NVS credentials.
+ *     2. Fall back to arduino_secrets.h.
+ *
+ * This allows hardcoded credentials to override previously
+ * saved BLE-provisioned credentials during testing.
  */
 void loadCredentials()
 {
@@ -121,8 +130,46 @@ void loadCredentials()
 
     credentialsAvailable = false;
 
+
     // --------------------------------------------------------
-    // 1. LOAD SAVED NVS CREDENTIALS
+    // 1. HARDCODED CREDENTIALS (OPTIONAL PRIORITY)
+    // --------------------------------------------------------
+
+#if WIFI_USE_HARDCODED_CREDENTIALS
+
+    if (strlen(WIFI_SSID) > 0)
+    {
+        const bool ssidValid = copyCredential(
+            activeSsid,
+            sizeof(activeSsid),
+            WIFI_SSID,
+            MAX_SSID_LENGTH
+        );
+
+        const bool passwordValid = copyCredential(
+            activePassword,
+            sizeof(activePassword),
+            WIFI_PASSWORD,
+            MAX_PASSWORD_LENGTH
+        );
+
+        if (ssidValid && passwordValid)
+        {
+            credentialsAvailable = true;
+
+            DisplayManager::logMessage(
+                "WiFi: hardcoded credentials loaded"
+            );
+
+            return;
+        }
+    }
+
+#endif
+
+
+    // --------------------------------------------------------
+    // 2. LOAD SAVED NVS CREDENTIALS
     // --------------------------------------------------------
 
     Preferences preferences;
@@ -154,7 +201,7 @@ void loadCredentials()
             credentialsAvailable = true;
 
             DisplayManager::logMessage(
-                "WiFi: saved credentials loaded"
+                "WiFi: saved NVS credentials loaded"
             );
 
             return;
@@ -163,8 +210,10 @@ void loadCredentials()
 
 
     // --------------------------------------------------------
-    // 2. FALLBACK TO COMPILE-TIME CREDENTIALS
+    // 3. FALLBACK TO HARDCODED CREDENTIALS
     // --------------------------------------------------------
+
+#if !WIFI_USE_HARDCODED_CREDENTIALS
 
     if (strlen(WIFI_SSID) > 0)
     {
@@ -191,6 +240,8 @@ void loadCredentials()
             );
         }
     }
+
+#endif
 }
 
 } // namespace

@@ -46,7 +46,7 @@ const char *modeName(MatrixMode mode)
 {
     switch (mode) {
         case MatrixMode::WATER: return "WATER";
-        case MatrixMode::HEART: return "MANSAlA & UMESH";
+        case MatrixMode::HEART: return "MANSALA & UMESH";
         case MatrixMode::LEVEL: return "LEVEL";
         default: return "UNKNOWN";
     }
@@ -54,20 +54,42 @@ const char *modeName(MatrixMode mode)
 
 void cycleMatrixMode()
 {
-    const uint8_t next = ((uint8_t)matrixMode + 1U) % 3U;
-    matrixMode = (MatrixMode)next;
-
-    // Reset sand animation when entering LEVEL mode.
-    if (matrixMode == MatrixMode::LEVEL) {
-        SandClock::reset(millis());
-    }
-
-    else if (matrixMode == MatrixMode::WATER)
+    switch (matrixMode)
     {
-        WaterAnimation::reset(millis());
+        case MatrixMode::HEART:
+
+            matrixMode = MatrixMode::LEVEL;
+
+            // Generate a fresh SandClock transfer plan.
+            SandClock::reset(millis());
+
+            break;
+
+
+        case MatrixMode::LEVEL:
+
+            matrixMode = MatrixMode::WATER;
+
+            // Reset water distribution.
+            WaterAnimation::reset(millis());
+
+            break;
+
+
+        case MatrixMode::WATER:
+
+            matrixMode = MatrixMode::HEART;
+
+            break;
     }
 
-    DisplayManager::logMessage("Matrix mode: %s", modeName(matrixMode));
+    // Allow the selected mode to render on the next loop.
+    lastMatrixFrameMs = 0;
+
+    DisplayManager::logMessage(
+        "Matrix mode changed: %s",
+        modeName(matrixMode)
+    );
 }
 
 void onButtonPressed(uint8_t pin)
@@ -708,7 +730,13 @@ void general_run(void)
     // UPDATE OLED AND BLUETOOTH STATUS
     // --------------------------------------------------------
 
-    updateDisplay(now);
+    // Do not redraw the OLED while the panel is switched OFF.
+    if (!PowerManager::isIdle())
+    {
+        updateDisplay(now);
+    }
+
+    // BLE status remains active even during display-idle mode.
     updateBleStatus(now);
 }
 
