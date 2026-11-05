@@ -47,7 +47,7 @@ const char *modeName(MatrixMode mode)
     switch (mode) {
         case MatrixMode::WATER: return "WATER";
         case MatrixMode::HEART: return "MANSALA & UMESH";
-        case MatrixMode::LEVEL: return "LEVEL";
+        case MatrixMode::LEVEL: return "SAND CLOCK";
         default: return "UNKNOWN";
     }
 }
@@ -649,7 +649,7 @@ void general_run(void)
     const uint32_t now = millis();
 
     // --------------------------------------------------------
-    // UPDATE CONNECTIVITY
+    // 1. UPDATE CONNECTIVITY
     // --------------------------------------------------------
 
     WifiManager::update();
@@ -657,14 +657,14 @@ void general_run(void)
 
 
     // --------------------------------------------------------
-    // UPDATE MPU6050
+    // 2. UPDATE MPU6050
     // --------------------------------------------------------
 
     MPU6050::update();
 
 
     // --------------------------------------------------------
-    // UPDATE PHYSICAL BUTTONS
+    // 3. UPDATE PHYSICAL BUTTONS
     // --------------------------------------------------------
 
     updateButton(
@@ -681,7 +681,7 @@ void general_run(void)
 
 
     // --------------------------------------------------------
-    // PROCESS BLUETOOTH COMMANDS
+    // 4. PROCESS BLUETOOTH COMMANDS
     // --------------------------------------------------------
 
     char command[48];
@@ -695,7 +695,7 @@ void general_run(void)
 
 
     // --------------------------------------------------------
-    // UPDATE POWER MANAGEMENT
+    // 5. UPDATE POWER MANAGEMENT
     // --------------------------------------------------------
 
     PowerManager::update(
@@ -706,7 +706,41 @@ void general_run(void)
 
 
     // --------------------------------------------------------
-    // UPDATE OLED AND BLUETOOTH STATUS
+    // 6. UPDATE MATRIX ANIMATIONS
+    // --------------------------------------------------------
+
+    /*
+     * IMPORTANT:
+     *
+     * This scheduler must remain active during normal operation.
+     *
+     * It advances:
+     *     HEART - brightness pulse.
+     *     WATER - liquid movement.
+     *     LEVEL - SandClock grain state machine.
+     *
+     * Matrix animation is paused only during display-idle mode.
+     */
+
+    if (!PowerManager::isIdle() &&
+        (uint32_t)(now - lastMatrixFrameMs) >=
+            ProjectConfig::MATRIX_FRAME_MS)
+    {
+        lastMatrixFrameMs = now;
+
+        drawMatrixFrame(now);
+    }
+
+
+    // --------------------------------------------------------
+    // 7. UPDATE POWER MONITOR
+    // --------------------------------------------------------
+
+    updatePowerMonitor(now);
+
+
+    // --------------------------------------------------------
+    // 8. UPDATE OLED
     // --------------------------------------------------------
 
     // Do not update the OLED framebuffer while the panel is OFF.
@@ -715,28 +749,13 @@ void general_run(void)
         updateDisplay(now);
     }
 
-    // BLE status remains available while the OLED is idle.
-    updateBleStatus(now);
-
 
     // --------------------------------------------------------
-    // UPDATE POWER MONITOR
+    // 9. UPDATE BLUETOOTH STATUS
     // --------------------------------------------------------
 
-    updatePowerMonitor(now);
-
-
-    // --------------------------------------------------------
-    // UPDATE OLED AND BLUETOOTH STATUS
-    // --------------------------------------------------------
-
-    // Do not redraw the OLED while the panel is switched OFF.
-    if (!PowerManager::isIdle())
-    {
-        updateDisplay(now);
-    }
-
-    // BLE status remains active even during display-idle mode.
+    // BLE status remains available during display-idle mode.
+    // BluetoothManager handles notifications only for connected clients.
     updateBleStatus(now);
 }
 
