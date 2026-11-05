@@ -99,6 +99,8 @@ void onButtonPressed(uint8_t pin)
     // Every physical button press counts as user activity.
     PowerManager::notifyUserActivity(now);
 
+   
+
     if (pin == ProjectConfig::BUTTON_PAGE_PIN)
     {
         displayPage = (displayPage + 1U) % 3U;
@@ -720,6 +722,8 @@ void general_run(void)
             command,
             sizeof(command)))
     {
+
+       
         applyBluetoothCommand(command);
     }
 

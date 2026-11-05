@@ -2,6 +2,7 @@
 
 #include "general.h"
 
+#include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp_err.h>
 
@@ -81,6 +82,43 @@ void initializeWatchdog()
     }
 }
 
+// ------------------------------------------------------------
+// ESP32 RESET REASON
+// ------------------------------------------------------------
+
+const char *getResetReasonName(esp_reset_reason_t reason)
+{
+    switch (reason)
+    {
+        case ESP_RST_POWERON:
+            return "POWER ON";
+
+        case ESP_RST_SW:
+            return "SOFTWARE RESET";
+
+        case ESP_RST_PANIC:
+            return "PANIC / EXCEPTION";
+
+        case ESP_RST_INT_WDT:
+            return "INTERRUPT WATCHDOG";
+
+        case ESP_RST_TASK_WDT:
+            return "TASK WATCHDOG";
+
+        case ESP_RST_WDT:
+            return "WATCHDOG";
+
+        case ESP_RST_DEEPSLEEP:
+            return "DEEP SLEEP";
+
+        case ESP_RST_BROWNOUT:
+            return "BROWNOUT / LOW SUPPLY";
+
+        default:
+            return "OTHER / UNKNOWN";
+    }
+}
+
 
 // ------------------------------------------------------------
 // ARDUINO SETUP
@@ -90,6 +128,15 @@ void setup()
 {
     Serial.begin(115200);
     delay(50);
+
+    // Display the cause of the most recent ESP32 restart.
+    const esp_reset_reason_t resetReason = esp_reset_reason();
+
+    Serial.printf(
+        "\n[BOOT] Reset reason: %s (%d)\n",
+        getResetReasonName(resetReason),
+        (int)resetReason
+    );
 
     // Initialize watchdog before starting the application.
     initializeWatchdog();

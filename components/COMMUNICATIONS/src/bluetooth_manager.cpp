@@ -5,6 +5,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLEAdvertising.h>
+#include <BLE2902.h>
 
 
 #include <string.h>
@@ -63,6 +64,12 @@ BLECharacteristic *passwordCharacteristic = nullptr;
 bool advertisingEnabled = false;
 bool previouslyConnected = false;
 
+// Wait for the BLE stack to complete disconnection
+// before restarting advertisements.
+constexpr uint32_t BLE_RESTART_DELAY_MS = 500;
+
+bool advertisingRestartPending = false;
+uint32_t disconnectDetectedMs = 0;
 
 // ------------------------------------------------------------
 // COMMAND BUFFER
@@ -334,6 +341,9 @@ bool begin()
         BLECharacteristic::PROPERTY_NOTIFY
     );
 
+    // Enable the standard client notification subscription descriptor.
+    statusCharacteristic->addDescriptor(new BLE2902());
+
     statusCharacteristic->setValue(String("booting"));
 
 
@@ -477,24 +487,45 @@ void update()
         return;
     }
 
+    const uint32_t now = millis();
+
     const bool connected =
         server->getConnectedCount() > 0;
 
     if (connected)
     {
         previouslyConnected = true;
+        advertisingRestartPending = false;
         return;
     }
 
-    // Restart advertising after a connected client disconnects.
+    // Detect a disconnected BLE client.
     if (previouslyConnected)
     {
         previouslyConnected = false;
 
+        // Schedule advertising restart after the BLE stack settles.
+        advertisingRestartPending = true;
+        disconnectDetectedMs = now;
+
+        DisplayManager::logMessage(
+            "BLE: client disconnected; scheduling advertising restart"
+        );
+
+        return;
+    }
+
+    // Restart advertising after the disconnection delay.
+    if (advertisingRestartPending &&
+        (uint32_t)(now - disconnectDetectedMs) >=
+            BLE_RESTART_DELAY_MS)
+    {
+        advertisingRestartPending = false;
+
         BLEDevice::startAdvertising();
 
         DisplayManager::logMessage(
-            "BLE: restarting advertising after disconnect"
+            "BLE: advertising restarted after disconnect"
         );
     }
 }
@@ -526,7 +557,7 @@ void setStatus(
 {
     // Do not generate or update application status data
     // when no BLE client is connected.
-    if (statusCharacteristic == nullptr || !isConnected()) {
+    if (statusCharacteristic == nullptr) {
         return;
     }
 
@@ -555,7 +586,11 @@ void setStatus(
     );
 
     // Send status only to a connected BLE client.
-    statusCharacteristic->notify();
+    // Always maintain the latest device status.
+    // Send notifications only when a BLE client is connected.
+    if (isConnected()) {
+        statusCharacteristic->notify();
+    }
 }
 
 
