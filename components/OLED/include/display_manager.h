@@ -17,6 +17,11 @@ struct Status {
     bool wifiConnected = false;
     bool ntpSynced = false;
 
+    bool bleEnabled = false;
+    bool bleConnected = false;
+
+    const char *wifiProvisionStatus = "WAIT";
+
     const char *ipAddress = "-";
     const char *modeName = "WATER";
 
@@ -26,6 +31,8 @@ struct Status {
     bool externalPowerPresent = false;
     int batteryPercent = -1;    
 };
+
+
 
 void begin();
 void showStartupMessage(const char *message);

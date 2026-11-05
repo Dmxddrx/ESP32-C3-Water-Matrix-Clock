@@ -178,6 +178,10 @@ void applyBluetoothCommand(const char *command)
                 receivedPassword,
                 sizeof(receivedPassword)))
         {
+            BluetoothManager::setWifiProvisionState(
+                BluetoothManager::WifiProvisionState::ERROR
+            );
+
             DisplayManager::logMessage(
                 "BLE: WiFi provisioning rejected; credentials missing or invalid"
             );
@@ -190,12 +194,19 @@ void applyBluetoothCommand(const char *command)
                 receivedSsid,
                 receivedPassword))
         {
+            BluetoothManager::setWifiProvisionState(
+                BluetoothManager::WifiProvisionState::CONNECTING
+            );
+
             DisplayManager::logMessage(
                 "BLE: WiFi credentials accepted; connecting..."
             );
         }
         else
         {
+            BluetoothManager::setWifiProvisionState(
+                BluetoothManager::WifiProvisionState::ERROR
+            );
             DisplayManager::logMessage(
                 "BLE: unable to save WiFi credentials"
             );
@@ -272,6 +283,13 @@ void updateDisplay(uint32_t now)
     status.wifiConnected = WifiManager::isConnected();
     status.ntpSynced = WifiManager::isTimeValid();
     status.ipAddress = WifiManager::ipAddress();
+
+    // BLE connection and Wi-Fi provisioning information.
+    status.bleEnabled = BluetoothManager::isEnabled();
+    status.bleConnected = BluetoothManager::isConnected();
+
+    status.wifiProvisionStatus =
+        BluetoothManager::wifiProvisionStateText();
 
     status.modeName = modeName(matrixMode);
     status.page = displayPage;
@@ -655,6 +673,18 @@ void general_run(void)
     WifiManager::update();
     BluetoothManager::update();
 
+
+    // Mark provisioning successful once the Wi-Fi connection is established.
+    if (
+        BluetoothManager::getWifiProvisionState() ==
+            BluetoothManager::WifiProvisionState::CONNECTING &&
+        WifiManager::isConnected()
+    )
+    {
+        BluetoothManager::setWifiProvisionState(
+            BluetoothManager::WifiProvisionState::CONNECTED
+        );
+    }
 
     // --------------------------------------------------------
     // 2. UPDATE MPU6050

@@ -32,6 +32,20 @@ namespace BluetoothManager {
         uint8_t brightness
     );
 
+    enum class WifiProvisionState : uint8_t {
+        WAITING,
+        SSID_RECEIVED,
+        PASSWORD_RECEIVED,
+        CONNECTING,
+        CONNECTED,
+        ERROR
+    };
+
+    // Track the progress of Wi-Fi provisioning over BLE.
+    void setWifiProvisionState(WifiProvisionState state);
+    WifiProvisionState getWifiProvisionState();
+    const char *wifiProvisionStateText();
+
     // Retrieve a command written by the connected phone.
     bool takeCommand(char *out, size_t outSize);
 

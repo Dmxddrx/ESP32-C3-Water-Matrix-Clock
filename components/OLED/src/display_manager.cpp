@@ -2,6 +2,7 @@
 #include "fonts.h"
 #include "icons.h"
 #include "mpu6050.h"
+#include "bluetooth_manager.h"
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -529,22 +530,26 @@ void drawPortraitClockPage(const Status &status)
     );
 
 
-    // --------------------------------------------------
-    // NETWORK STATUS (CENTERED)
+        // --------------------------------------------------
+    // NETWORK AND BLUETOOTH STATUS
     // --------------------------------------------------
 
     display.setTextSize(1);
 
     char wifiText[16];
     char ntpText[16];
+    char bleText[16];
+    char configText[16];
 
+    // Wi-Fi connection state.
     snprintf(
         wifiText,
         sizeof(wifiText),
-        "WiFi: %s",
+        "WIFI: %s",
         status.wifiConnected ? "ON" : "OFF"
     );
 
+    // NTP synchronization state.
     snprintf(
         ntpText,
         sizeof(ntpText),
@@ -552,8 +557,41 @@ void drawPortraitClockPage(const Status &status)
         status.ntpSynced ? "SYNC" : "WAIT"
     );
 
-    drawCenteredText(wifiText, 101, 1);
-    drawCenteredText(ntpText, 111, 1);
+    // BLE advertising / connection state.
+    const char *bleState =
+        !status.bleEnabled
+            ? "OFF"
+            : (status.bleConnected ? "LINK" : "ON");
+
+    snprintf(
+        bleText,
+        sizeof(bleText),
+        "BLE: %s",
+        bleState
+    );
+
+    // Wi-Fi provisioning progress.
+    snprintf(
+        configText,
+        sizeof(configText),
+        "CFG: %s",
+        status.wifiProvisionStatus != nullptr
+            ? status.wifiProvisionStatus
+            : "WAIT"
+    );
+
+    // Four compact status lines below the vertical clock.
+    display.setCursor(3, 96);
+    display.print(wifiText);
+
+    //display.setCursor(3, 104);
+    //display.print(ntpText);
+
+    display.setCursor(3, 104);
+    display.print(bleText);
+
+    display.setCursor(3, 112);
+    display.print(configText);
 
 
     // --------------------------------------------------

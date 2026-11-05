@@ -91,7 +91,13 @@ bool ssidReceived = false;
 bool passwordReceived = false;
 bool credentialInputInvalid = false;
 
+// ------------------------------------------------------------
+// WIFI PROVISIONING STATUS
+// ------------------------------------------------------------
 
+WifiProvisionState wifiProvisionState =
+    WifiProvisionState::WAITING;
+    
 // ------------------------------------------------------------
 // COMMAND QUEUE
 // ------------------------------------------------------------
@@ -146,6 +152,10 @@ void stageSsid(const char *data, size_t length)
 
     portENTER_CRITICAL(&commandMux);
 
+    wifiProvisionState = valid
+        ? WifiProvisionState::SSID_RECEIVED
+        : WifiProvisionState::ERROR;
+
     // A new SSID starts a new credential transaction.
     memset(stagedSsid, 0, sizeof(stagedSsid));
     memset(stagedPassword, 0, sizeof(stagedPassword));
@@ -195,11 +205,17 @@ void stagePassword(const char *data, size_t length)
         stagedPassword[length] = '\0';
 
         passwordReceived = true;
+
+        wifiProvisionState =
+        (ssidReceived && !credentialInputInvalid)
+            ? WifiProvisionState::PASSWORD_RECEIVED
+            : WifiProvisionState::ERROR;
     }
     else
     {
         passwordReceived = false;
         credentialInputInvalid = true;
+        wifiProvisionState = WifiProvisionState::ERROR;
     }
 
     portEXIT_CRITICAL(&commandMux);
@@ -514,18 +530,22 @@ void setStatus(
         return;
     }
 
-    char status[100];
+    char status[128];
+
+    // Include the current Wi-Fi provisioning state.
+    const char *configState = wifiProvisionStateText();
 
     snprintf(
         status,
         sizeof(status),
-        "P=%.1f,R=%.1f,WIFI=%d,TIME=%d,MODE=%s,BRIGHT=%u",
+        "BLE=LINK,P=%.1f,R=%.1f,WIFI=%d,TIME=%d,MODE=%s,BRIGHT=%u,CFG=%s",
         pitchDeg,
         rollDeg,
         wifiConnected ? 1 : 0,
         timeValid ? 1 : 0,
         (modeName != nullptr) ? modeName : "?",
-        brightness
+        brightness,
+        configState
     );
 
     // Include a null terminator for the app's string notification reader.
@@ -619,6 +639,11 @@ bool takeWifiCredentials(
         valid = true;
     }
 
+    // Record whether a complete credential transaction was received.
+    wifiProvisionState = valid
+        ? WifiProvisionState::CONNECTING
+        : WifiProvisionState::ERROR;
+        
     // Clear staging after every WIFI_CONNECT request.
     memset(stagedSsid, 0, sizeof(stagedSsid));
     memset(stagedPassword, 0, sizeof(stagedPassword));
@@ -632,4 +657,44 @@ bool takeWifiCredentials(
     return valid;
 }
 
+void setWifiProvisionState(WifiProvisionState state)
+{
+    portENTER_CRITICAL(&commandMux);
+    wifiProvisionState = state;
+    portEXIT_CRITICAL(&commandMux);
+}
+
+WifiProvisionState getWifiProvisionState()
+{
+    portENTER_CRITICAL(&commandMux);
+    const WifiProvisionState state = wifiProvisionState;
+    portEXIT_CRITICAL(&commandMux);
+
+    return state;
+}
+
+const char *wifiProvisionStateText()
+{
+    switch (getWifiProvisionState())
+    {
+        case WifiProvisionState::WAITING:
+            return "WAIT";
+
+        case WifiProvisionState::SSID_RECEIVED:
+            return "SSID";
+
+        case WifiProvisionState::PASSWORD_RECEIVED:
+            return "PASS";
+
+        case WifiProvisionState::CONNECTING:
+            return "CONN";
+
+        case WifiProvisionState::CONNECTED:
+            return "OK";
+
+        case WifiProvisionState::ERROR:
+        default:
+            return "ERR";
+    }
+}
 } // namespace BluetoothManager
